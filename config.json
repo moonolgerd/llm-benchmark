@@ -1,0 +1,55 @@
+{
+  "baseUrl": "http://localhost:8888/v1",
+  "apiKey": "${UNSLOTH_API_KEY}",
+  "repeatsPerTask": 2,
+  "sampling": {
+    "temperature": 0.7,
+    "topP": 0.8,
+    "topK": 20,
+    "minP": 0.05,
+    "repetitionPenalty": 1.1,
+    "enableThinking": false
+  },
+  "models": [
+    { "id": "esatapedico/Qwen3.8-27B-NVFP4-MTP-GGUF:HIGH", "displayName": "Qwen3.8-27B-NVFP4-MTP-HIGH" }
+  ],
+  "tasks": [],
+  "contextProbe": {
+    "enabled": false,
+    "tokenSteps": [8192, 16384, 32768, 65536],
+    "fillerText": "The quick brown fox jumps over the lazy dog near the riverbank at dusk. "
+  },
+  "agentBenchmark": {
+    "enabled": true,
+    "modelId": "esatapedico/Qwen3.8-27B-NVFP4-MTP-GGUF:HIGH",
+    "concurrencyLoad": {
+      "enabled": false,
+      "agentCounts": [1, 2, 4],
+      "repeatsPerLevel": 1,
+      "instructions": "You are a concise coding assistant.",
+      "prompt": "Write a C# extension method that chunks an IEnumerable<T> into batches of a given size.",
+      "maxTokens": 300
+    },
+    "workflow": {
+      "enabled": true,
+      "prompt": "Add retry-with-backoff to a C# HttpClient wrapper method called FetchAsync(string url).",
+      "maxTokensPerStage": 1200,
+      "parallelPipelineCounts": [1, 2],
+      "repeatsPerLevel": 1,
+      "stages": [
+        {
+          "name": "Planner",
+          "instructions": "You are a senior engineer scoping a small change. List the concrete steps needed, in 3-5 bullet points. Do not write code yet."
+        },
+        {
+          "name": "Coder",
+          "instructions": "You are a senior C# engineer. Given the plan above, write the resulting code. Output only the code and a one-line explanation."
+        },
+        {
+          "name": "Reviewer",
+          "instructions": "You are a code reviewer. Given the code above, point out any bugs or edge cases in 2-3 bullet points, or say 'Looks good' if there are none."
+        }
+      ]
+    }
+  }
+}

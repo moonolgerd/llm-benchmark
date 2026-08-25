@@ -1,0 +1,87 @@
+{
+  "baseUrl": "http://127.0.0.1:1919/v1",
+  "apiKey": "",
+  "repeatsPerTask": 2,
+  "sampling": {
+    "temperature": 0.7,
+    "topP": 0.8,
+    "topK": 20,
+    "minP": 0.05,
+    "repetitionPenalty": 1.1,
+    "enableThinking": false,
+    "reasoningEffort": "low"
+  },
+  "models": [
+    { "id": "Qwen3.8-27B-NVFP4", "displayName": "Qwen3.8-27B-NVFP4 (FreeToken)" }
+  ],
+  "tasks": [
+    {
+      "name": "short-gen-baseline",
+      "systemPrompt": "You are a concise coding assistant.",
+      "prompt": "Write a C# extension method that chunks an IEnumerable<T> into batches of a given size.",
+      "maxTokens": 1200
+    },
+    {
+      "name": "csharp-refactor-di",
+      "systemPrompt": "You are a senior .NET engineer. Return only the code changes needed, with brief explanation.",
+      "prompt": "Given this class:\n\npublic class OrderProcessor\n{\n    private readonly SqlOrderRepository _repo = new SqlOrderRepository();\n    private readonly SmtpEmailSender _email = new SmtpEmailSender();\n\n    public void Process(int orderId)\n    {\n        var order = _repo.GetById(orderId);\n        order.Status = \"Processed\";\n        _repo.Save(order);\n        _email.Send(order.CustomerEmail, \"Your order is processed\");\n    }\n}\n\nExtract interfaces for the repository and email sender, refactor OrderProcessor to use constructor injection, and show the DI registration for a standard ASP.NET Core Program.cs.",
+      "maxTokens": 2200
+    },
+    {
+      "name": "react-async-component",
+      "systemPrompt": "You are a senior React/TypeScript engineer.",
+      "prompt": "Write a TypeScript React functional component `UserProfile` that fetches a user by id from `/api/users/:id` on mount, shows a loading spinner while fetching, shows an error message with a retry button on failure, and renders the user's name and email on success. Use hooks only, no external libraries besides React.",
+      "maxTokens": 2200
+    },
+    {
+      "name": "cross-file-reasoning",
+      "systemPrompt": "You are a code reviewer.",
+      "prompt": "File A (UserService.cs):\npublic class UserService\n{\n    private readonly Dictionary<int, User> _cache = new();\n    public User GetUser(int id)\n    {\n        if (_cache.TryGetValue(id, out var u)) return u;\n        var loaded = _db.Load(id);\n        _cache[id] = loaded;\n        return loaded;\n    }\n}\n\nFile B (UserController.cs):\n[HttpPost(\"users/{id}/update\")]\npublic IActionResult UpdateUser(int id, UserDto dto)\n{\n    var user = _userService.GetUser(id);\n    user.Name = dto.Name;\n    _db.Save(user);\n    return Ok();\n}\n\nIdentify the bug that spans both files and explain the fix.",
+      "maxTokens": 1600
+    },
+    {
+      "name": "agentic-style-tool-use",
+      "systemPrompt": "You are an autonomous coding agent. When you need to inspect or change files, respond with a JSON tool call in the form {\"tool\": \"<name>\", \"args\": {...}}. Otherwise respond normally.",
+      "prompt": "The build is failing with: 'CS0246: The type or namespace name IOrderRepository could not be found'. You have access to tools: read_file(path), search_repo(query), write_file(path, content). Decide your next action and emit the tool call.",
+      "maxTokens": 1000
+    }
+  ],
+  "contextProbe": {
+    "enabled": true,
+    "tokenSteps": [4096, 8192, 16384, 32768],
+    "fillerText": "The quick brown fox jumps over the lazy dog near the riverbank at dusk. "
+  },
+  "agentBenchmark": {
+    "enabled": true,
+    "modelId": "Qwen3.8-27B-NVFP4",
+    "concurrencyLoad": {
+      "enabled": true,
+      "agentCounts": [1, 2, 4],
+      "repeatsPerLevel": 1,
+      "instructions": "You are a concise coding assistant.",
+      "prompt": "Write a C# extension method that chunks an IEnumerable<T> into batches of a given size.",
+      "maxTokens": 900
+    },
+    "workflow": {
+      "enabled": true,
+      "prompt": "Add retry-with-backoff to a C# HttpClient wrapper method called FetchAsync(string url).",
+      "maxTokensPerStage": 1800,
+      "parallelPipelineCounts": [1, 2],
+      "repeatsPerLevel": 1,
+      "stages": [
+        {
+          "name": "Planner",
+          "instructions": "You are a senior engineer scoping a small change. List the concrete steps needed, in 3-5 bullet points. Do not write code yet."
+        },
+        {
+          "name": "Coder",
+          "instructions": "You are a senior C# engineer. Given the plan above, write the resulting code. Output only the code and a one-line explanation."
+        },
+        {
+          "name": "Reviewer",
+          "instructions": "You are a code reviewer. Given the code above, point out any bugs or edge cases in 2-3 bullet points, or say 'Looks good' if there are none."
+        }
+      ]
+    }
+  }
+}
