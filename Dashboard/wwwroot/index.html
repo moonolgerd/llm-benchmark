@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LlmBenchmark Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #262b36; --text: #d7dde6;
+    --dim: #9aa4b2; --accent: #4f8cff; --green: #39c07f; --yellow: #ffb020;
+    --red: #ff5c5c; --purple: #b07cff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 20px;
+           background: var(--panel); border-bottom: 1px solid var(--border);
+           position: sticky; top: 0; z-index: 5; }
+  .brand { font-weight: 700; font-size: 16px; margin-right: 8px; }
+  select, button { background: #20242e; color: var(--text); border: 1px solid var(--border);
+                   border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { background: transparent; border-color: var(--red); color: var(--red); }
+  .pill { margin-left: auto; padding: 4px 12px; border-radius: 999px; font-size: 12px;
+          font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .pill.idle      { background: #2a2f3a; color: var(--dim); }
+  .pill.running   { background: rgba(57,192,127,.15); color: var(--green); animation: pulse 1.6s infinite; }
+  .pill.completed { background: rgba(79,140,255,.15); color: var(--accent); }
+  .pill.cancelled { background: rgba(255,176,32,.15); color: var(--yellow); }
+  .pill.failed    { background: rgba(255,92,92,.15); color: var(--red); }
+  @keyframes pulse { 50% { opacity: .55; } }
+
+  main { padding: 16px 20px 40px; max-width: 1280px; margin: 0 auto; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+           padding: 14px 16px; margin-bottom: 16px; }
+  h2 { margin: 0 0 10px; font-size: 15px; }
+  h3 { margin: 18px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); }
+  .panel-head { display: flex; align-items: baseline; gap: 12px; }
+  .stage { color: var(--accent); font-weight: 600; }
+  #log { background: #0b0d11; border: 1px solid var(--border); border-radius: 8px;
+         padding: 10px 12px; height: 240px; overflow-y: auto; margin: 10px 0 6px;
+         font: 12px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+  .err { color: var(--red); min-height: 1em; font-size: 12px; }
+  #toast { position: fixed; bottom: 18px; right: 18px; background: #3a1f24; color: var(--red);
+           border: 1px solid var(--red); border-radius: 8px; padding: 10px 14px; max-width: 420px;
+           display: none; z-index: 10; font-size: 13px; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--dim); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  tr.run-row { cursor: pointer; }
+  tr.run-row:hover { background: #1d2230; }
+  tr.run-row.selected { background: rgba(79,140,255,.12); }
+  .chip { display: inline-block; background: #20242e; border: 1px solid var(--border);
+          border-radius: 999px; padding: 1px 8px; margin-right: 6px; font-size: 11px; color: var(--dim); }
+
+  .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .chart-row { grid-template-columns: 1fr; } }
+  .chart-box { position: relative; height: 280px; margin-top: 8px; }
+  .chart-box.wide { height: 300px; }
+  .note { color: var(--dim); font-size: 12px; margin: 4px 0 8px; }
+
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px 14px; }
+  .field label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--dim);
+                 font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .field input, .field select { background: #20242e; color: var(--text); border: 1px solid var(--border);
+                 border-radius: 6px; padding: 6px 10px; font: inherit; width: 100%; }
+  .field input:focus { outline: none; border-color: var(--accent); }}
+
+  details { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; padding: 8px 12px; }
+  summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+  details pre { background: #0b0d11; border-radius: 6px; padding: 10px; margin: 8px 0 4px;
+                white-space: pre-wrap; word-break: break-word; font: 12px/1.5 ui-monospace, Consolas, monospace; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">LlmBenchmark</div>
+  <select id="configSelect" title="Config to run"></select>
+  <button id="startBtn" class="btn primary">Start</button>
+  <button id="stopBtn" class="btn danger" disabled>Stop</button>
+  <span id="statusPill" class="pill idle">idle</span>
+</header>
+
+<main>
+  <section class="panel">
+    <div class="panel-head"><h2>Live run</h2><span id="stageLine" class="stage"></span></div>
+    <pre id="log"></pre>
+    <div id="errorLine" class="err"></div>
+  </section>
+
+  <section class="panel">
+    <details>
+      <summary>Run overrides (optional)</summary>
+      <div class="form-grid">
+        <div class="field"><label>Base URL</label><input id="ovBaseUrl" type="text" placeholder="(from config)" spellcheck="false" /></div>
+        <div class="field"><label>API key</label><input id="ovApiKey" type="text" placeholder="(from config)" spellcheck="false" /></div>
+        <div class="field"><label>Max tokens</label><input id="ovMaxTokens" type="number" min="1" placeholder="(from config)" /></div>
+        <div class="field"><label>Repeats per task</label><input id="ovRepeats" type="number" min="1" placeholder="(from config)" /></div>
+        <div class="field"><label>Temperature</label><input id="ovTemp" type="number" step="0.05" min="0" max="2" placeholder="(from config)" /></div>
+        <div class="field"><label>Top P</label><input id="ovTopP" type="number" step="0.05" min="0" max="1" placeholder="(from config)" /></div>
+        <div class="field"><label>Top K</label><input id="ovTopK" type="number" min="0" placeholder="(from config)" /></div>
+        <div class="field"><label>Min P</label><input id="ovMinP" type="number" step="0.01" min="0" placeholder="(from config)" /></div>
+        <div class="field"><label>Repetition penalty</label><input id="ovRepetition" type="number" step="0.05" min="0" placeholder="(from config)" /></div>
+        <div class="field"><label><input id="ovEnableThinking" type="checkbox" /> Enable thinking</label></div>
+        <div class="field"><label>Reasoning effort</label>
+          <select id="ovReasoningEffort">
+            <option value="">(from config)</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+        </div>
+      </div>
+      <p class="note">Leave a field blank to keep the config file's value. Max tokens and repeats apply to every task.</p>
+    </details>
+  </section>
+
+  <section class="panel">
+    <h2>Runs</h2>
+    <table id="runsTable">
+      <thead><tr><th style="width:180px">timestamp</th><th>datasets</th></tr></thead>
+      <tbody id="runsBody"></tbody>
+    </table>
+  </section>
+
+  <section class="panel" id="runDetail">
+    <h2 id="runTitle">No run selected</h2>
+
+    <div id="speedSection" style="display:none">
+      <h3>Speed &amp; quality — per model · task</h3>
+      <p class="note">Successful attempts only. tok/s is excluded (n/a) when the generation window was under 50&nbsp;ms — below that, clock resolution makes the number meaningless.</p>
+      <div class="chart-row">
+        <div class="chart-box"><canvas id="chartSpeedTps"></canvas></div>
+        <div class="chart-box"><canvas id="chartSpeedTtft"></canvas></div>
+      </div>
+    </div>
+
+    <div id="ctxSection" style="display:none">
+      <h3>Context probe</h3>
+      <div class="chart-box wide"><canvas id="chartCtx"></canvas></div>
+      <table>
+        <thead><tr><th>model</th><th>requested</th><th>result</th><th>device max ctx</th><th>VRAM after</th></tr></thead>
+        <tbody id="ctxBody"></tbody>
+      </table>
+    </div>
+
+    <div id="concSection" style="display:none">
+      <h3>Agent concurrency load (Agent Framework)</h3>
+      <div class="chart-box wide"><canvas id="chartConc"></canvas></div>
+      <table>
+        <thead><tr><th>level</th><th>wall clock (ms)</th><th>ok / fail</th><th>aggregate tok/s</th><th>avg TTFT (ms)</th></tr></thead>
+        <tbody id="concBody"></tbody>
+      </table>
+    </div>
+
+    <div id="wfSection" style="display:none">
+      <h3>Multi-agent workflow (Agent Framework)</h3>
+      <div class="chart-box wide"><canvas id="chartWf"></canvas></div>
+      <table>
+        <thead><tr><th>stage</th><th>mean duration (ms)</th><th>mean tok/s</th><th>ok / total</th></tr></thead>
+        <tbody id="wfBody"></tbody>
+      </table>
+    </div>
+
+    <div id="transcriptsSection" style="display:none">
+      <h3>Transcripts (manual grading)</h3>
+      <div id="transcripts"></div>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const state = { running: false, selectedTs: null, charts: {} };
+
+if (typeof Chart !== "undefined") {
+  Chart.defaults.color = "#9aa4b2";
+  Chart.defaults.borderColor = "rgba(255,255,255,0.08)";
+} else {
+  console.warn("Chart.js failed to load (offline?) — tables still work.");
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) {
+    let msg; try { msg = (await r.json()).error; } catch { msg = r.statusText; }
+    throw new Error(`${path} → ${r.status}: ${msg}`);
+  }
+  return r.json();
+}
+
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.style.display = "block";
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.style.display = "none"; }, 8000);
+}
+
+const mean = xs => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+const fmt = (x, d = 1) => x == null ? "n/a" : Number(x).toFixed(d);
+const td = t => { const el = document.createElement("td"); el.textContent = t; return el; };
+
+// ---------------------------------------------------------------- status polling
+
+async function pollStatus() {
+  let s;
+  try { s = await api("/api/status"); } catch (e) { toast(e.message); return; }
+
+  const wasRunning = state.running;
+  state.running = s.running;
+
+  const pill = $("statusPill");
+  if (s.running)            { pill.className = "pill running";   pill.textContent = "running"; }
+  else if (s.outcome === "completed") { pill.className = "pill completed"; pill.textContent = "completed"; }
+  else if (s.outcome === "cancelled") { pill.className = "pill cancelled"; pill.textContent = "cancelled"; }
+  else if (s.outcome === "failed")    { pill.className = "pill failed";    pill.textContent = "failed"; pill.title = s.lastError || ""; }
+  else                              { pill.className = "pill idle";      pill.textContent = "idle"; }
+
+  $("stageLine").textContent = s.running ? `▸ ${s.stage}` : "";
+  $("errorLine").textContent = (s.outcome === "failed" && s.lastError) ? `last error: ${s.lastError}` : "";
+
+  const pre = $("log");
+  const pinned = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+  pre.textContent = s.log || "";
+  if (pinned) pre.scrollTop = pre.scrollHeight;
+
+  $("startBtn").disabled = s.running;
+  $("stopBtn").disabled = !s.running;
+
+  if (wasRunning && !s.running) {
+    // Run just finished — CSVs are already on disk at this point. Refresh the
+    // runs list and jump to the newest run.
+    await loadRuns();
+    const runs = await api("/api/results").catch(() => []);
+    if (runs.length) selectRun(runs[0].timestamp);
+  }
+}
+
+// --------------------------------------------------------------------- runs list
+
+async function loadRuns() {
+  let runs;
+  try { runs = await api("/api/results"); } catch (e) { toast(e.message); return; }
+  const tbody = $("runsBody");
+  tbody.innerHTML = "";
+  for (const r of runs) {
+    const tr = document.createElement("tr");
+    tr.className = "run-row" + (r.timestamp === state.selectedTs ? " selected" : "");
+    tr.dataset.ts = r.timestamp;
+    tr.onclick = () => selectRun(r.timestamp);
+    tr.append(td(r.timestamp));
+    const tdDs = document.createElement("td");
+    for (const d of r.datasets) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = d;
+      tdDs.appendChild(chip);
+    }
+    tr.append(tdDs);
+    tbody.appendChild(tr);
+  }
+}
+
+function highlightRow(ts) {
+  document.querySelectorAll(".run-row").forEach(tr =>
+    tr.classList.toggle("selected", tr.dataset.ts === ts));
+}
+
+// ------------------------------------------------------------------ run details
+
+async function selectRun(ts) {
+  state.selectedTs = ts;
+  $("runTitle").textContent = `Run ${ts}`;
+  highlightRow(ts);
+
+  const [data, transcripts] = await Promise.all([
+    api(`/api/runs/${ts}`).catch(() => null),
+    api(`/api/runs/${ts}/transcripts`).catch(() => [])
+  ]);
+  renderRun(data || {}, transcripts || []);
+}
+
+function showSection(id, visible) { $(id).style.display = visible ? "" : "none"; }
+
+function makeChart(canvasId, cfg) {
+  if (typeof Chart === "undefined") return;
+  const el = $(canvasId);
+  if (!el) return;
+  if (state.charts[canvasId]) state.charts[canvasId].destroy();
+  state.charts[canvasId] = new Chart(el.getContext("2d"), cfg);
+}
+
+function barOptions(unit) {
+  return {
+    responsive: true,
+    plugins: { legend: { display: false } },
+    scales: { y: { beginAtZero: true, title: { display: true, text: unit } } }
+  };
+}
+
+function renderRun(data, transcripts) {
+  const speed = data["speed"];
+  showSection("speedSection", !!(speed && speed.length));
+  if (speed && speed.length) renderSpeed(speed);
+
+  const ctx = data["context-probe"];
+  showSection("ctxSection", !!(ctx && ctx.length));
+  if (ctx && ctx.length) renderContext(ctx);
+
+  const conc = data["agent-concurrency-summary"];
+  showSection("concSection", !!(conc && conc.length));
+  if (conc && conc.length) renderConcurrency(conc);
+
+  const wfPipelines = data["agent-workflow-pipelines"];
+  const wfStages = data["agent-workflow-stages"];
+  showSection("wfSection", !!((wfPipelines && wfPipelines.length) || (wfStages && wfStages.length)));
+  if ((wfPipelines && wfPipelines.length) || (wfStages && wfStages.length))
+    renderWorkflow(wfPipelines || [], wfStages || []);
+
+  renderTranscripts(transcripts);
+}
+
+function renderSpeed(rows) {
+  const groups = new Map();
+  for (const r of rows) {
+    if (!r.Success) continue;
+    const key = `${r.ModelId} / ${r.TaskName}`;
+    if (!groups.has(key)) groups.set(key, { tps: [], ttft: [] });
+    const g = groups.get(key);
+    if (typeof r.TokensPerSecond === "number") g.tps.push(r.TokensPerSecond);
+    if (typeof r.TtftMs === "number") g.ttft.push(r.TtftMs);
+  }
+  const labels = [...groups.keys()];
+  makeChart("chartSpeedTps", {
+    type: "bar",
+    data: { labels, datasets: [{ label: "mean tokens/s", data: labels.map(l => mean(groups.get(l).tps)), backgroundColor: "#4f8cff" }] },
+    options: barOptions("tokens/s")
+  });
+  makeChart("chartSpeedTtft", {
+    type: "bar",
+    data: { labels, datasets: [{ label: "mean TTFT (ms)", data: labels.map(l => mean(groups.get(l).ttft)), backgroundColor: "#39c07f" }] },
+    options: barOptions("ms")
+  });
+}
+
+function renderContext(rows) {
+  const byModel = new Map();
+  for (const r of rows) {
+    if (!r.Succeeded) continue;
+    const cur = byModel.get(r.ModelId) ?? 0;
+    byModel.set(r.ModelId, Math.max(cur, Number(r.RequestedContextTokens)));
+  }
+  makeChart("chartCtx", {
+    type: "bar",
+    data: { labels: [...byModel.keys()], datasets: [{ label: "max successful context (tokens)", data: [...byModel.values()], backgroundColor: "#b07cff" }] },
+    options: barOptions("tokens")
+  });
+
+  const tbody = $("ctxBody");
+  tbody.innerHTML = "";
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    tr.append(td(r.ModelId), td(`~${r.RequestedContextTokens}`));
+    const resTd = td(r.Succeeded ? "✓" : "✗");
+    if (r.Error) resTd.title = r.Error;
+    tr.append(resTd, td(r.DeviceMaxContextTokens ?? "n/a"), td(`${fmt(r.VramUsedMbAfter, 0)} MB`));
+    tbody.appendChild(tr);
+  }
+}
+
+function renderConcurrency(rows) {
+  const byLevel = new Map();
+  for (const r of rows) {
+    if (!byLevel.has(r.ConcurrencyLevel))
+      byLevel.set(r.ConcurrencyLevel, { agg: [], ttft: [], wall: [], ok: 0, fail: 0 });
+    const g = byLevel.get(r.ConcurrencyLevel);
+    g.agg.push(Number(r.AggregateTokensPerSecond));
+    if (typeof r.AvgTtftMs === "number") g.ttft.push(Number(r.AvgTtftMs));
+    g.wall.push(Number(r.WallClockMs));
+    g.ok += Number(r.SuccessCount);
+    g.fail += Number(r.FailCount);
+  }
+  const levels = [...byLevel.keys()].sort((a, b) => a - b);
+  makeChart("chartConc", {
+    data: {
+      labels: levels.map(String),
+      datasets: [
+        { type: "bar", label: "mean aggregate tokens/s", data: levels.map(l => mean(byLevel.get(l).agg)), backgroundColor: "#4f8cff", yAxisID: "y" },
+        { type: "line", label: "mean TTFT (ms)", data: levels.map(l => mean(byLevel.get(l).ttft)), borderColor: "#ffb020", backgroundColor: "#ffb020", yAxisID: "y1", tension: 0.3 }
+      ]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        y:  { beginAtZero: true, title: { display: true, text: "tokens/s" } },
+        y1: { position: "right", beginAtZero: true, grid: { drawOnChartArea: false }, title: { display: true, text: "ms" } }
+      }
+    }
+  });
+
+  const tbody = $("concBody");
+  tbody.innerHTML = "";
+  for (const l of levels) {
+    const g = byLevel.get(l);
+    const tr = document.createElement("tr");
+    tr.append(td(`x${l}`), td(fmt(mean(g.wall), 0)), td(`${g.ok} / ${g.fail}`),
+               td(fmt(mean(g.agg))), td(fmt(mean(g.ttft))));
+    tbody.appendChild(tr);
+  }
+}
+
+function renderWorkflow(pipelines, stages) {
+  const byCount = new Map();
+  for (const p of pipelines) {
+    if (!p.Success) continue;
+    if (!byCount.has(p.PipelineParallelCount)) byCount.set(p.PipelineParallelCount, []);
+    byCount.get(p.PipelineParallelCount).push(Number(p.TotalDurationMs));
+  }
+  const counts = [...byCount.keys()].sort((a, b) => a - b);
+  makeChart("chartWf", {
+    type: "bar",
+    data: { labels: counts.map(c => `x${c}`), datasets: [{ label: "mean pipeline duration (ms)", data: counts.map(c => mean(byCount.get(c))), backgroundColor: "#39c07f" }] },
+    options: barOptions("ms")
+  });
+
+  const byStage = new Map();
+  for (const s of stages) {
+    if (!byStage.has(s.StageName)) byStage.set(s.StageName, { dur: [], tps: [], ok: 0, total: 0 });
+    const g = byStage.get(s.StageName);
+    g.dur.push(Number(s.DurationMs));
+    if (typeof s.TokensPerSecond === "number") g.tps.push(s.TokensPerSecond);
+    if (s.Success) g.ok++;
+    g.total++;
+  }
+  const tbody = $("wfBody");
+  tbody.innerHTML = "";
+  for (const [name, g] of byStage) {
+    const tr = document.createElement("tr");
+    tr.append(td(name), td(fmt(mean(g.dur), 0)), td(fmt(mean(g.tps))), td(`${g.ok} / ${g.total}`));
+    tbody.appendChild(tr);
+  }
+}
+
+function renderTranscripts(list) {
+  showSection("transcriptsSection", list.length > 0);
+  const box = $("transcripts");
+  box.innerHTML = "";
+  for (const t of list) {
+    const d = document.createElement("details");
+    const s = document.createElement("summary");
+    s.textContent = `${t.modelId} :: ${t.taskName} :: attempt ${t.attempt}`;
+    const pre = document.createElement("pre");
+    pre.textContent = t.text;
+    d.append(s, pre);
+    box.appendChild(d);
+  }
+}
+
+// ------------------------------------------------------------------------ wiring
+
+// Read the override fields into a RunOverrides payload. Anything left blank is
+// omitted (undefined) so the loaded config file's values are left untouched.
+function readOverrides() {
+  const num = id => { const v = Number($(id).value); return v > 0 ? v : undefined; };
+  return {
+    baseUrl: $("ovBaseUrl").value.trim() || undefined,
+    apiKey: $("ovApiKey").value.trim() || undefined,
+    maxTokens: num("ovMaxTokens"),
+    repeatsPerTask: num("ovRepeats"),
+    temperature: num("ovTemp"),
+    topP: num("ovTopP"),
+    topK: num("ovTopK"),
+    minP: num("ovMinP"),
+    repetitionPenalty: num("ovRepetition"),
+    enableThinking: $("ovEnableThinking").checked ? true : undefined,
+    reasoningEffort: $("ovReasoningEffort").value || undefined
+  };
+}
+
+$("startBtn").onclick = async () => {
+  try {
+    await api("/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ configPath: $("configSelect").value, overrides: readOverrides() })
+    });
+    pollStatus();
+  } catch (e) { toast(e.message); }
+};
+
+$("stopBtn").onclick = async () => {
+  try { await api("/api/stop", { method: "POST" }); pollStatus(); }
+  catch (e) { toast(e.message); }
+};
+
+(async function init() {
+  try {
+    const configs = await api("/api/configs");
+    const sel = $("configSelect");
+    sel.innerHTML = "";
+    for (const c of configs) {
+      const o = document.createElement("option");
+      o.value = c.path;
+      o.textContent = c.name;
+      sel.appendChild(o);
+    }
+    if (!configs.length) {
+      sel.disabled = true;
+      sel.textContent = "(no config files found)";
+    }
+  } catch (e) { toast(e.message); }
+
+  await pollStatus();
+
+  try {
+    await loadRuns();
+    const runs = await api("/api/results");
+    if (runs.length) selectRun(runs[0].timestamp); // auto-select newest on page load
+  } catch (e) { /* no results yet — fine */ }
+
+  setInterval(pollStatus, 1500);
+})();
+</script>
+</body>
+</html>
