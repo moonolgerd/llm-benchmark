@@ -94,6 +94,10 @@ public sealed class RunController
     /// Thinking stays off unless the checkbox is ticked (there's no "off" from the
     /// UI, and the config default is off anyway); reasoning effort is sent only
     /// when a tier is chosen.
+    /// Context-probe and agent toggles are tri-state (not null) so they can turn a
+    /// mode off as well as on. Token steps arrive as a comma/space-separated string
+    /// and are parsed into ints (non-positive/non-numeric entries are dropped);
+    /// the config list is left untouched if nothing parses.
     /// </summary>
     private static void ApplyOverrides(BenchmarkConfig config, RunOverrides? o)
     {
@@ -111,6 +115,17 @@ public sealed class RunController
         if (o.RepetitionPenalty is > 0) config.Sampling.RepetitionPenalty = o.RepetitionPenalty.Value;
         if (o.EnableThinking is true) config.Sampling.EnableThinking = true;
         if (!string.IsNullOrWhiteSpace(o.ReasoningEffort)) config.Sampling.ReasoningEffort = o.ReasoningEffort;
+        if (o.ContextProbeEnabled is not null) config.ContextProbe.Enabled = o.ContextProbeEnabled.Value;
+        if (!string.IsNullOrWhiteSpace(o.ContextProbeFillerText)) config.ContextProbe.FillerText = o.ContextProbeFillerText;
+        if (!string.IsNullOrWhiteSpace(o.ContextProbeTokenSteps))
+        {
+            var steps = new List<int>();
+            foreach (var part in o.ContextProbeTokenSteps.Split(new[] { ',', ' ', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries))
+                if (int.TryParse(part, out var v) && v > 0) steps.Add(v);
+            if (steps.Count > 0) config.ContextProbe.TokenSteps = steps;
+        }
+        if (o.AgentBenchmarkEnabled is not null) config.AgentBenchmark.Enabled = o.AgentBenchmarkEnabled.Value;
+        if (!string.IsNullOrWhiteSpace(o.AgentBenchmarkModelId)) config.AgentBenchmark.ModelId = o.AgentBenchmarkModelId;
     }
 
     public object Status()

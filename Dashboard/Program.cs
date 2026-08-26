@@ -99,6 +99,11 @@ public sealed record RunOverrides(
     double? MinP,
     double? RepetitionPenalty,
     bool? EnableThinking,
-    string? ReasoningEffort);
+    string? ReasoningEffort,
+    bool? ContextProbeEnabled,
+    string? ContextProbeFillerText,
+    string? ContextProbeTokenSteps,
+    bool? AgentBenchmarkEnabled,
+    string? AgentBenchmarkModelId);
 
 public sealed record RunRequest(string? ConfigPath, RunOverrides? Overrides);

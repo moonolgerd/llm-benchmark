@@ -119,6 +119,20 @@
   </section>
 
   <section class="panel">
+    <details>
+      <summary>Benchmark modes &amp; context probe</summary>
+      <div class="form-grid">
+        <div class="field"><label><input id="ovCtxEnabled" type="checkbox" /> Enable context probe</label></div>
+        <div class="field"><label>Filler text</label><input id="ovCtxFiller" type="text" placeholder="(from config)" spellcheck="false" /></div>
+        <div class="field"><label>Context token steps</label><input id="ovCtxSteps" type="text" placeholder="e.g. 8192, 16384, 32768" spellcheck="false" /></div>
+        <div class="field"><label><input id="ovAgentEnabled" type="checkbox" /> Enable agent benchmark</label></div>
+        <div class="field"><label>Agent model id</label><input id="ovAgentModel" type="text" placeholder="(from config)" spellcheck="false" /></div>
+      </div>
+      <p class="note">Toggles apply when checked. Token steps are a comma/space-separated list (non-positive values ignored); the config value is kept if left blank.</p>
+    </details>
+  </section>
+
+  <section class="panel">
     <h2>Runs</h2>
     <table id="runsTable">
       <thead><tr><th style="width:180px">timestamp</th><th>datasets</th></tr></thead>
@@ -480,7 +494,12 @@ function readOverrides() {
     minP: num("ovMinP"),
     repetitionPenalty: num("ovRepetition"),
     enableThinking: $("ovEnableThinking").checked ? true : undefined,
-    reasoningEffort: $("ovReasoningEffort").value || undefined
+    reasoningEffort: $("ovReasoningEffort").value || undefined,
+    contextProbeEnabled: $("ovCtxEnabled").checked ? true : undefined,
+    contextProbeFillerText: $("ovCtxFiller").value.trim() || undefined,
+    contextProbeTokenSteps: $("ovCtxSteps").value.trim() || undefined,
+    agentBenchmarkEnabled: $("ovAgentEnabled").checked ? true : undefined,
+    agentBenchmarkModelId: $("ovAgentModel").value.trim() || undefined
   };
 }
 
