@@ -133,6 +133,21 @@
   </section>
 
   <section class="panel">
+    <details>
+      <summary>Agent concurrency load (optional)</summary>
+      <div class="form-grid">
+        <div class="field"><label><input id="ovConcEnabled" type="checkbox" /> Enabled</label></div>
+        <div class="field"><label>Agent counts</label><input id="ovConcCounts" type="text" placeholder="e.g. 1, 2, 4" spellcheck="false" /></div>
+        <div class="field"><label>Repeats per level</label><input id="ovConcRepeats" type="number" min="1" placeholder="(from config)" /></div>
+        <div class="field"><label>Max tokens</label><input id="ovConcMaxTokens" type="number" min="1" placeholder="(from config)" /></div>
+        <div class="field"><label>Agent instruction</label><input id="ovConcInstructions" type="text" placeholder="(from config)" spellcheck="false" /></div>
+        <div class="field"><label>Agent prompt</label><input id="ovConcPrompt" type="text" placeholder="(from config)" spellcheck="false" /></div>
+      </div>
+      <p class="note">Enabled applies when checked. Agent counts are a comma/space-separated list (non-positive values ignored). Repeats and max tokens apply to every level.</p>
+    </details>
+  </section>
+
+  <section class="panel">
     <h2>Runs</h2>
     <table id="runsTable">
       <thead><tr><th style="width:180px">timestamp</th><th>datasets</th></tr></thead>
@@ -499,7 +514,13 @@ function readOverrides() {
     contextProbeFillerText: $("ovCtxFiller").value.trim() || undefined,
     contextProbeTokenSteps: $("ovCtxSteps").value.trim() || undefined,
     agentBenchmarkEnabled: $("ovAgentEnabled").checked ? true : undefined,
-    agentBenchmarkModelId: $("ovAgentModel").value.trim() || undefined
+    agentBenchmarkModelId: $("ovAgentModel").value.trim() || undefined,
+    concurrencyEnabled: $("ovConcEnabled").checked ? true : undefined,
+    concurrencyAgentCounts: $("ovConcCounts").value.trim() || undefined,
+    concurrencyRepeatsPerLevel: $("ovConcRepeats").value.length ? Number($("ovConcRepeats").value) : undefined,
+    concurrencyInstructions: $("ovConcInstructions").value.trim() || undefined,
+    concurrencyPrompt: $("ovConcPrompt").value.trim() || undefined,
+    concurrencyMaxTokens: $("ovConcMaxTokens").value.length ? Number($("ovConcMaxTokens").value) : undefined
   };
 }
 

@@ -104,6 +104,12 @@ public sealed record RunOverrides(
     string? ContextProbeFillerText,
     string? ContextProbeTokenSteps,
     bool? AgentBenchmarkEnabled,
-    string? AgentBenchmarkModelId);
+    string? AgentBenchmarkModelId,
+    bool? ConcurrencyEnabled,
+    string? ConcurrencyAgentCounts,
+    int? ConcurrencyRepeatsPerLevel,
+    string? ConcurrencyInstructions,
+    string? ConcurrencyPrompt,
+    int? ConcurrencyMaxTokens);
 
 public sealed record RunRequest(string? ConfigPath, RunOverrides? Overrides);

@@ -95,9 +95,10 @@ public sealed class RunController
     /// UI, and the config default is off anyway); reasoning effort is sent only
     /// when a tier is chosen.
     /// Context-probe and agent toggles are tri-state (not null) so they can turn a
-    /// mode off as well as on. Token steps arrive as a comma/space-separated string
-    /// and are parsed into ints (non-positive/non-numeric entries are dropped);
-    /// the config list is left untouched if nothing parses.
+    /// mode off as well as on. Agent-concurrency counts arrive as a
+    /// comma/space-separated string and are parsed into ints (non-positive/
+    /// non-numeric entries are dropped); the config list is left untouched if
+    /// nothing parses.
     /// </summary>
     private static void ApplyOverrides(BenchmarkConfig config, RunOverrides? o)
     {
@@ -126,6 +127,18 @@ public sealed class RunController
         }
         if (o.AgentBenchmarkEnabled is not null) config.AgentBenchmark.Enabled = o.AgentBenchmarkEnabled.Value;
         if (!string.IsNullOrWhiteSpace(o.AgentBenchmarkModelId)) config.AgentBenchmark.ModelId = o.AgentBenchmarkModelId;
+        if (o.ConcurrencyEnabled is not null) config.AgentBenchmark.ConcurrencyLoad.Enabled = o.ConcurrencyEnabled.Value;
+        if (!string.IsNullOrWhiteSpace(o.ConcurrencyAgentCounts))
+        {
+            var counts = new List<int>();
+            foreach (var part in o.ConcurrencyAgentCounts.Split(new[] { ',', ' ', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries))
+                if (int.TryParse(part, out var v) && v > 0) counts.Add(v);
+            if (counts.Count > 0) config.AgentBenchmark.ConcurrencyLoad.AgentCounts = counts;
+        }
+        if (o.ConcurrencyRepeatsPerLevel is > 0) config.AgentBenchmark.ConcurrencyLoad.RepeatsPerLevel = o.ConcurrencyRepeatsPerLevel.Value;
+        if (!string.IsNullOrWhiteSpace(o.ConcurrencyInstructions)) config.AgentBenchmark.ConcurrencyLoad.Instructions = o.ConcurrencyInstructions;
+        if (!string.IsNullOrWhiteSpace(o.ConcurrencyPrompt)) config.AgentBenchmark.ConcurrencyLoad.Prompt = o.ConcurrencyPrompt;
+        if (o.ConcurrencyMaxTokens is > 0) config.AgentBenchmark.ConcurrencyLoad.MaxTokens = o.ConcurrencyMaxTokens.Value;
     }
 
     public object Status()
