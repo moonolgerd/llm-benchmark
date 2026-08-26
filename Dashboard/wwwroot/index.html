@@ -148,6 +148,19 @@
   </section>
 
   <section class="panel">
+    <details>
+      <summary>Agent workflow (optional)</summary>
+      <div class="form-grid">
+        <div class="field"><label>Input prompt</label><input id="ovWfPrompt" type="text" placeholder="(from config)" spellcheck="false" /></div>
+        <div class="field"><label>Max tokens / stage</label><input id="ovWfMaxTokens" type="number" min="1" placeholder="(from config)" /></div>
+        <div class="field"><label>Parallel pipelines</label><input id="ovWfParallel" type="text" placeholder="e.g. 1, 2" spellcheck="false" /></div>
+        <div class="field"><label>Repeats per level</label><input id="ovWfRepeats" type="number" min="1" placeholder="(from config)" /></div>
+      </div>
+      <p class="note">Parallel pipelines is a comma/space-separated list (non-positive values ignored). Repeats and max tokens apply to every stage.</p>
+    </details>
+  </section>
+
+  <section class="panel">
     <h2>Runs</h2>
     <table id="runsTable">
       <thead><tr><th style="width:180px">timestamp</th><th>datasets</th></tr></thead>
@@ -520,7 +533,11 @@ function readOverrides() {
     concurrencyRepeatsPerLevel: $("ovConcRepeats").value.length ? Number($("ovConcRepeats").value) : undefined,
     concurrencyInstructions: $("ovConcInstructions").value.trim() || undefined,
     concurrencyPrompt: $("ovConcPrompt").value.trim() || undefined,
-    concurrencyMaxTokens: $("ovConcMaxTokens").value.length ? Number($("ovConcMaxTokens").value) : undefined
+    concurrencyMaxTokens: $("ovConcMaxTokens").value.length ? Number($("ovConcMaxTokens").value) : undefined,
+    workflowPrompt: $("ovWfPrompt").value.trim() || undefined,
+    workflowMaxTokensPerStage: $("ovWfMaxTokens").value.length ? Number($("ovWfMaxTokens").value) : undefined,
+    workflowParallelPipelineCounts: $("ovWfParallel").value.trim() || undefined,
+    workflowRepeatsPerLevel: $("ovWfRepeats").value.length ? Number($("ovWfRepeats").value) : undefined
   };
 }
 

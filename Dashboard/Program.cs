@@ -110,6 +110,10 @@ public sealed record RunOverrides(
     int? ConcurrencyRepeatsPerLevel,
     string? ConcurrencyInstructions,
     string? ConcurrencyPrompt,
-    int? ConcurrencyMaxTokens);
+    int? ConcurrencyMaxTokens,
+    string? WorkflowPrompt,
+    int? WorkflowMaxTokensPerStage,
+    string? WorkflowParallelPipelineCounts,
+    int? WorkflowRepeatsPerLevel);
 
 public sealed record RunRequest(string? ConfigPath, RunOverrides? Overrides);
