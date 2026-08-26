@@ -185,9 +185,10 @@ public class OpenAiClient
             await using var stream = await response.Content.ReadAsStreamAsync(ct);
             using var reader = new StreamReader(stream);
 
-            while (!reader.EndOfStream)
+            // ReadLineAsync returns null at end of stream — more reliable than
+            // EndOfStream on a network stream, which can block or lie.
+            while (await reader.ReadLineAsync(ct) is { } line)
             {
-                string? line = await reader.ReadLineAsync(ct);
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 if (!line.StartsWith("data:")) continue;
 

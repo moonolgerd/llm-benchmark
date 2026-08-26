@@ -29,9 +29,9 @@ public class AgentFrameworkRunner
         _chatClient = CreateChatClient(baseUrl, apiKey, modelId);
     }
 
-    // Shared with DevUiHost so the interactive DevUI session talks to the same
-    // local server the same way the benchmark does.
-    internal static IChatClient CreateChatClient(string baseUrl, string apiKey, string modelId)
+    // Shared with DevUiHost (separate assembly) so the interactive DevUI session
+    // talks to the same local server the same way the benchmark does.
+    public static IChatClient CreateChatClient(string baseUrl, string apiKey, string modelId)
     {
         var credential = new ApiKeyCredential(string.IsNullOrWhiteSpace(apiKey) ? "not-needed" : apiKey);
         var options = new OpenAIClientOptions { Endpoint = new Uri(baseUrl) };
@@ -63,7 +63,7 @@ public class AgentFrameworkRunner
     // the whole max-tokens budget and leave the visible .Text empty (matching
     // the "reasoning-only" case OpenAiClient.cs already special-cases for the
     // raw-HTTP path) — the JsonPatch escape hatch reaches the raw request body.
-    internal static ChatOptions BuildChatOptions(string? instructions, int maxTokens) => new()
+    public static ChatOptions BuildChatOptions(string? instructions, int maxTokens) => new()
     {
         Instructions = instructions,
         MaxOutputTokens = maxTokens,
@@ -81,14 +81,18 @@ public class AgentFrameworkRunner
     // Concurrency load: N identical agents run the same prompt at once.
     // ---------------------------------------------------------------------
 
+    /// <param name="onStage">Optional hook reporting the sub-stage currently in flight
+    /// (e.g. "Agent benchmark: concurrency x4") so callers can surface it in a UI.</param>
     public async Task<(List<AgentConcurrencyRunResult> Runs, List<AgentConcurrencyLevelSummary> Summaries)>
-        RunConcurrencyLoadAsync(ConcurrencyLoadConfig cfg, Action<string> onProgress, CancellationToken ct = default)
+        RunConcurrencyLoadAsync(ConcurrencyLoadConfig cfg, Action<string> onProgress,
+            Action<string>? onStage = null, CancellationToken ct = default)
     {
         var runs = new List<AgentConcurrencyRunResult>();
         var summaries = new List<AgentConcurrencyLevelSummary>();
 
         foreach (int level in cfg.AgentCounts)
         {
+            onStage?.Invoke($"Agent benchmark: concurrency x{level}");
             for (int repeat = 1; repeat <= cfg.RepeatsPerLevel; repeat++)
             {
                 onProgress($"  Concurrency x{level}, repeat {repeat}/{cfg.RepeatsPerLevel}... ");
@@ -204,8 +208,11 @@ public class AgentFrameworkRunner
     // optionally run as several concurrent pipeline instances.
     // ---------------------------------------------------------------------
 
+    /// <param name="onStage">Optional hook reporting the sub-stage currently in flight
+    /// (e.g. "Agent benchmark: workflow x2") so callers can surface it in a UI.</param>
     public async Task<(List<AgentWorkflowStageResult> Stages, List<AgentWorkflowPipelineSummary> Pipelines)>
-        RunWorkflowAsync(AgentWorkflowConfig cfg, Action<string> onProgress, CancellationToken ct = default)
+        RunWorkflowAsync(AgentWorkflowConfig cfg, Action<string> onProgress,
+            Action<string>? onStage = null, CancellationToken ct = default)
     {
         var stageResults = new List<AgentWorkflowStageResult>();
         var pipelineSummaries = new List<AgentWorkflowPipelineSummary>();
@@ -218,6 +225,7 @@ public class AgentFrameworkRunner
 
         foreach (int parallelCount in cfg.ParallelPipelineCounts)
         {
+            onStage?.Invoke($"Agent benchmark: workflow x{parallelCount}");
             for (int repeat = 1; repeat <= cfg.RepeatsPerLevel; repeat++)
             {
                 onProgress($"  Workflow x{parallelCount} parallel pipeline(s), repeat {repeat}/{cfg.RepeatsPerLevel}... ");

@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/AppHost/">
+    <Project Path="AppHost/LlmBenchmark.AppHost.csproj" />
+  </Folder>
+  <Folder Name="/Core/">
+    <Project Path="Core/LlmBenchmark.Core.csproj" />
+  </Folder>
+  <Folder Name="/Dashboard/">
+    <Project Path="Dashboard/LlmBenchmark.Dashboard.csproj" />
+  </Folder>
+  <Project Path="LlmBenchmark.csproj" />
+</Solution>

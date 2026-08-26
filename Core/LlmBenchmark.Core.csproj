@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>LlmBenchmark</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <!-- Agent Framework packages needed by AgentFrameworkRunner (shared by CLI and
+       Dashboard). The DevUI/Hosting trio stays in the root csproj with its only
+       consumer, DevUiHost.cs — Microsoft.Agents.AI.DevUI ships staticwebassets
+       (an index.html of its own) that would collide with the Dashboard's. -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.18.0" />
+    <PackageReference Include="Microsoft.Agents.AI.Workflows" Version="1.18.0" />
+  </ItemGroup>
+
+</Project>

@@ -5,6 +5,33 @@ namespace LlmBenchmark;
 
 public static class ResultsWriter
 {
+    /// <summary>
+    /// Writes one run's timestamped result files (the same set the CLI always
+    /// produced) into outDir. Both the CLI and the dashboard call this so their
+    /// runs land in results/ identically; partial (cancelled) runs are written
+    /// too. Agent files are written when present — a disabled or skipped
+    /// agentBenchmark leaves those lists empty.
+    /// </summary>
+    public static void WriteRun(string outDir, string timestamp, BenchmarkRunResult run)
+    {
+        Directory.CreateDirectory(outDir);
+        WriteSpeedCsv(Path.Combine(outDir, $"speed-{timestamp}.csv"), run.SpeedResults);
+        WriteContextProbeCsv(Path.Combine(outDir, $"context-probe-{timestamp}.csv"), run.ContextResults);
+        WriteQualityTranscripts(Path.Combine(outDir, $"quality-transcripts-{timestamp}.txt"), run.QualityRecords);
+
+        if (run.AgentConcurrencyRuns.Count > 0 || run.AgentConcurrencySummaries.Count > 0)
+        {
+            WriteAgentConcurrencyCsv(Path.Combine(outDir, $"agent-concurrency-{timestamp}.csv"), run.AgentConcurrencyRuns);
+            WriteAgentConcurrencySummaryCsv(Path.Combine(outDir, $"agent-concurrency-summary-{timestamp}.csv"), run.AgentConcurrencySummaries);
+        }
+
+        if (run.WorkflowStages.Count > 0 || run.WorkflowPipelines.Count > 0)
+        {
+            WriteAgentWorkflowStagesCsv(Path.Combine(outDir, $"agent-workflow-stages-{timestamp}.csv"), run.WorkflowStages);
+            WriteAgentWorkflowPipelinesCsv(Path.Combine(outDir, $"agent-workflow-pipelines-{timestamp}.csv"), run.WorkflowPipelines);
+        }
+    }
+
     public static void WriteSpeedCsv(string path, IEnumerable<SpeedResult> results)
     {
         using var writer = new StreamWriter(path, append: false);

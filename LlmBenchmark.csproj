@@ -9,12 +9,30 @@
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
+  <!-- OpenAI + Workflows flow in transitively from Core; the DevUI/Hosting trio
+       is declared here because its only consumer (DevUiHost.cs) lives here. -->
   <ItemGroup>
-    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.18.0" />
-    <PackageReference Include="Microsoft.Agents.AI.Workflows" Version="1.18.0" />
     <PackageReference Include="Microsoft.Agents.AI.DevUI" Version="1.18.0-preview.260818.1" />
     <PackageReference Include="Microsoft.Agents.AI.Hosting" Version="1.18.0-preview.260818.1" />
     <PackageReference Include="Microsoft.Agents.AI.Hosting.OpenAI" Version="1.18.0-alpha.260818.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Core\LlmBenchmark.Core.csproj" />
+  </ItemGroup>
+
+  <!-- The sibling projects live in subfolders of this one; keep the default
+       globs from compiling their sources/content into the CLI. -->
+  <ItemGroup>
+    <Compile Remove="Core\**" />
+    <Compile Remove="Dashboard\**" />
+    <Compile Remove="AppHost\**" />
+    <Content Remove="Core\**" />
+    <Content Remove="Dashboard\**" />
+    <Content Remove="AppHost\**" />
+    <None Remove="Core\**" />
+    <None Remove="Dashboard\**" />
+    <None Remove="AppHost\**" />
   </ItemGroup>
 
 </Project>

@@ -27,11 +27,15 @@ how the model behaves under multi-agent load.
 # 1. Put your Unsloth token in the environment (not in the config file):
 setx UNSLOTH_API_KEY sk-unsloth-...      # or: set UNSLOTH_API_KEY=... for one shell
 
-# 2. Run the default config (Unsloth on localhost:8888):
+# 2. Run the default config (Unsloth on localhost:8888) from the CLI:
 dotnet run
 
 # 3. Or run against FreeToken Desktop (localhost:1919, no auth needed):
 dotnet run -- config.freetoken.json
+
+# 4. Or use the web dashboard — pick a config, hit Start, watch live progress,
+#    and view charts of every past run:
+dotnet run --project Dashboard     # → http://localhost:5274
 ```
 
 Results land in `results/` with a timestamp suffix, e.g. `speed-20260824-221430.csv`.
@@ -119,6 +123,39 @@ startup. If the variable is unset, the tool prints a warning and continues unaut
 instead of sending the literal placeholder. Local servers that need no auth can just use
 `"apiKey": ""`.
 
+## Dashboard
+
+A single-page web app that can **run** benchmarks (live stage + log, stop button) and
+**view** results (charts over everything in `results/`). It reuses the exact same runner
+and CSV format as the CLI — runs started from either side land in the same `results/`
+folder and show up in both.
+
+```powershell
+dotnet run --project Dashboard    # standalone → http://localhost:5274
+```
+
+- **Port** is fixed at `http://localhost:5274`; override with the `DASHBOARD_URL` env var
+  (e.g. `set DASHBOARD_URL=http://localhost:9000`).
+- **Configs**: every `*.json` next to the dashboard exe shows up in the config dropdown
+  (`config.json` / `config.freetoken.json` are copied there at build time). `${VAR}` env
+  placeholders resolve from the dashboard process's environment — same rule as the CLI.
+- **Results** are read from `<exe-dir>/results`; past CLI runs are visible immediately
+  (the folder is copied into the output directory at build time).
+- **Stop** cancels the run gracefully; whatever completed so far is written to `results/`
+  with a normal timestamp, exactly like a finished run.
+
+### Running via .NET Aspire
+
+```powershell
+dotnet run --project AppHost      # starts the dashboard on http://localhost:5274
+```
+
+The AppHost orchestrates the dashboard as its single resource (pinned to the same 5274
+port, so the URL is identical in both modes). The LLM server itself is **not** a managed
+resource — it's assumed already running. Env inheritance: child processes inherit the
+AppHost's environment, so `UNSLOTH_API_KEY` set on the machine reaches the dashboard with
+no explicit plumbing.
+
 ## DevUI mode
 
 ```
@@ -159,15 +196,34 @@ All files get a `yyyyMMdd-HHmmss` timestamp suffix.
 
 ## Project layout
 
+Four projects in one solution (`LlmBenchmark.slnx`):
+
 ```
-Program.cs               entry point: config load, speed pass, context probe, agent benchmark
-OpenAiClient.cs          minimal streaming OpenAI-compatible client (TTFT capture)
-AgentFrameworkRunner.cs  Agent Framework concurrency load + Planner/Coder/Reviewer workflow
-DevUiHost.cs             --devui mode: chattable agents + workflow in Agent Framework DevUI
-GpuMonitor.cs            nvidia-smi VRAM reader
-TokenEstimator.cs        ~4 chars/token fallback estimator
-ResultsWriter.cs         CSV/transcript writers
-Models/                  config + result record types
+Program.cs               CLI entry point: arg parse → runner → CSV write → summary
+LlmBenchmark.csproj      root = the CLI exe (also hosts DevUI mode)
+
+Core/                    LlmBenchmark.Core — shared library, namespace stays LlmBenchmark
+  BenchmarkRunner.cs     the full benchmark loop (warmup, speed pass, context probe,
+                         agent concurrency + workflow), stage callback, cancellation
+  ConfigLoader.cs        config JSON load + ${VAR} env placeholder resolution
+  OpenAiClient.cs        minimal streaming OpenAI-compatible client (TTFT capture)
+  AgentFrameworkRunner.cs  Agent Framework concurrency load + Planner/Coder/Reviewer workflow
+  GpuMonitor.cs          nvidia-smi VRAM reader
+  TokenEstimator.cs      ~4 chars/token fallback estimator
+  ResultsWriter.cs       CSV/transcript writers (shared by CLI and dashboard)
+  Models/                config + result record types (incl. BenchmarkRunResult aggregate)
+
+Dashboard/               LlmBenchmark.Dashboard — ASP.NET Core web app (port 5274)
+  Program.cs             minimal API: /api/status, /api/run, /api/stop,
+                         /api/configs, /api/results, /api/runs/{ts}[/transcripts]
+  RunController.cs       singleton run state machine + capped live log buffer
+  ResultsService.cs      reads results/*.csv (CsvHelper) into typed rows for the UI
+  wwwroot/index.html     single-page dark UI: live run panel + Chart.js charts
+
+AppHost/                 LlmBenchmark.AppHost — .NET Aspire 13 host; starts the dashboard
+
+devui mode lives in DevUiHost.cs (root project) — it needs the Agent Framework
+DevUI/Hosting packages, which are referenced there rather than in Core.
 config.json              default config (Unsloth, key via UNSLOTH_API_KEY)
 config.freetoken.json    FreeToken Desktop config (no auth)
 ```
