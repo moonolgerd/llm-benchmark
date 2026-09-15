@@ -36,7 +36,21 @@ public class AgentFrameworkRunner
         var credential = new ApiKeyCredential(string.IsNullOrWhiteSpace(apiKey) ? "not-needed" : apiKey);
         var options = new OpenAIClientOptions { Endpoint = new Uri(baseUrl) };
         var openAiClient = new OpenAIClient(credential, options);
-        return openAiClient.GetChatClient(modelId).AsIChatClient();
+        IChatClient chatClient = openAiClient.GetChatClient(modelId).AsIChatClient();
+
+        // Only wrap when telemetry is actually enabled (see AgentTelemetry) — this
+        // is a local benchmark tool talking to a local server, so surfacing full
+        // prompt/response text in spans (EnableSensitiveData) is a deliberate
+        // choice, not one that would be appropriate against a hosted provider.
+        if (AgentTelemetry.IsEnabled)
+        {
+            chatClient = chatClient.AsBuilder()
+                .UseOpenTelemetry(sourceName: AgentTelemetry.ChatClientSourceName,
+                    configure: cfg => cfg.EnableSensitiveData = true)
+                .Build();
+        }
+
+        return chatClient;
     }
 
     // Baked into the agent's own ChatOptions (rather than passed per-call) so it
@@ -101,8 +115,20 @@ public class AgentFrameworkRunner
                     .Select(_ => MakeAgent(cfg.Instructions, cfg.MaxTokens))
                     .ToList();
 
+                // This runs inside a fire-and-forget Task.Run off an ASP.NET Core
+                // request handler (the dashboard's /api/run), so Activity.Current
+                // would otherwise ambiently be that request's own — unsampled —
+                // activity: OTel's default ParentBased sampler follows a parent's
+                // sampling decision (an explicit-but-default ActivityContext doesn't
+                // escape this either — it reads as "unsampled parent", not "no
+                // parent"), so StartActivity would silently return null. Clearing
+                // Activity.Current first forces this onto its own sampled root trace.
+                Activity.Current = null;
+                using Activity? batchActivity = AgentTelemetry.ActivitySource.StartActivity("agent-concurrency.batch");
+                batchActivity?.SetTag("concurrency.level", level).SetTag("concurrency.repeat", repeat);
+
                 var sw = Stopwatch.StartNew();
-                var tasks = agents.Select((agent, i) => RunSingleAgentAsync(agent, cfg.Prompt, ct)
+                var tasks = agents.Select((agent, i) => RunSingleAgentAsync(agent, cfg.Prompt, level, repeat, i, ct)
                     .ContinueWith(t =>
                     {
                         var r = t.Result;
@@ -144,8 +170,13 @@ public class AgentFrameworkRunner
     }
 
     private async Task<AgentConcurrencyRunResult> RunSingleAgentAsync(
-        ChatClientAgent agent, string prompt, CancellationToken ct)
+        ChatClientAgent agent, string prompt, int concurrencyLevel, int repeat, int agentIndex, CancellationToken ct)
     {
+        using Activity? activity = AgentTelemetry.ActivitySource.StartActivity("agent-concurrency.run");
+        activity?.SetTag("concurrency.level", concurrencyLevel)
+            .SetTag("concurrency.repeat", repeat)
+            .SetTag("concurrency.agent_index", agentIndex);
+
         var sw = Stopwatch.StartNew();
         double ttftMs = -1;
         var sb = new StringBuilder();
@@ -182,6 +213,10 @@ public class AgentFrameworkRunner
             double genSeconds = (sw.Elapsed.TotalMilliseconds - ttftMs) / 1000.0;
             double tokPerSec = genSeconds >= MinReliableGenSeconds ? tokens / genSeconds : double.NaN;
 
+            activity?.SetTag("run.ttft_ms", ttftMs)
+                .SetTag("run.duration_ms", sw.Elapsed.TotalMilliseconds)
+                .SetTag("run.completion_tokens", tokens);
+
             return new AgentConcurrencyRunResult
             {
                 Success = true,
@@ -194,6 +229,7 @@ public class AgentFrameworkRunner
         catch (Exception ex)
         {
             sw.Stop();
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             return new AgentConcurrencyRunResult
             {
                 Success = false,
@@ -255,7 +291,20 @@ public class AgentFrameworkRunner
     private async Task<(List<AgentWorkflowStageResult> Stages, AgentWorkflowPipelineSummary Pipeline)> RunSinglePipelineAsync(
         AgentWorkflowConfig cfg, int parallelCount, int repeat, int pipelineIndex, CancellationToken ct)
     {
+        // Wall-clock anchor for reconstructing per-stage spans below: pipelineSw
+        // gives us relative offsets (ms since pipeline start), and this ties them
+        // back to absolute timestamps a trace viewer can place on a timeline.
+        var pipelineStartUtc = DateTimeOffset.UtcNow;
         var pipelineSw = Stopwatch.StartNew();
+
+        // See the comment on the equivalent agent-concurrency.batch span: forces
+        // this onto its own sampled root trace instead of silently inheriting
+        // (and being suppressed by) the ASP.NET Core request's unsampled activity.
+        Activity.Current = null;
+        using Activity? pipelineActivity = AgentTelemetry.ActivitySource.StartActivity("agent-workflow.pipeline");
+        pipelineActivity?.SetTag("workflow.parallel_count", parallelCount)
+            .SetTag("workflow.repeat", repeat)
+            .SetTag("workflow.pipeline_index", pipelineIndex);
 
         // Fresh agent instances per pipeline run so concurrent runs never share workflow/agent state.
         var stageAgents = cfg.Stages.Select(s => MakeAgent(s.Instructions, cfg.MaxTokensPerStage, s.Name)).ToList();
@@ -339,6 +388,25 @@ public class AgentFrameworkRunner
                 double genSeconds = durationMs / 1000.0;
                 double tokPerSec = genSeconds >= MinReliableGenSeconds ? tokens / genSeconds : double.NaN;
 
+                // Reconstructed after the fact from the timestamps above, rather
+                // than created live as each stage runs, since stage boundaries are
+                // only knowable once the interleaved event stream has been walked.
+                // Explicit start/end times still place it correctly on a trace
+                // timeline, nested under the pipeline span via parentContext.
+                using (Activity? stageActivity = AgentTelemetry.ActivitySource.StartActivity(
+                           $"agent-workflow.stage.{(i < cfg.Stages.Count ? cfg.Stages[i].Name : id)}",
+                           ActivityKind.Internal,
+                           pipelineActivity?.Context ?? default,
+                           startTime: pipelineStartUtc.AddMilliseconds(startMs)))
+                {
+                    stageActivity?.SetTag("stage.order", i)
+                        .SetTag("stage.name", i < cfg.Stages.Count ? cfg.Stages[i].Name : id)
+                        .SetTag("stage.ttft_ms", startMs)
+                        .SetTag("stage.duration_ms", durationMs)
+                        .SetTag("stage.completion_tokens", tokens)
+                        .SetEndTime(pipelineStartUtc.AddMilliseconds(endMs).UtcDateTime);
+                }
+
                 stages.Add(new AgentWorkflowStageResult
                 {
                     PipelineParallelCount = parallelCount,
@@ -354,6 +422,8 @@ public class AgentFrameworkRunner
                 });
             }
 
+            pipelineActivity?.SetTag("workflow.total_duration_ms", pipelineSw.Elapsed.TotalMilliseconds);
+
             return (stages, new AgentWorkflowPipelineSummary
             {
                 PipelineParallelCount = parallelCount,
@@ -366,6 +436,7 @@ public class AgentFrameworkRunner
         catch (Exception ex)
         {
             pipelineSw.Stop();
+            pipelineActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             return (stages, new AgentWorkflowPipelineSummary
             {
                 PipelineParallelCount = parallelCount,

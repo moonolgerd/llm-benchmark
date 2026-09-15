@@ -17,6 +17,11 @@ if (dashboardUrl is not null)
 builder.Services.AddSingleton<RunController>();
 builder.Services.AddSingleton<ResultsService>();
 
+// No-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set (see AgentTelemetry) — Aspire
+// sets it automatically when this project runs under AppHost, so agent/workflow
+// runs started from the dashboard show up as traces in the Aspire Dashboard.
+AgentTelemetry.AddToServices(builder.Services, "LlmBenchmark.Dashboard");
+
 var app = builder.Build();
 
 app.UseDefaultFiles();

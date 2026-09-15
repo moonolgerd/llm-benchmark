@@ -1,6 +1,11 @@
 using LlmBenchmark;
 using LlmBenchmark.Models;
 
+// No-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set (see AgentTelemetry) — point it
+// at a collector (e.g. a standalone Aspire Dashboard container) to see agent/
+// workflow traces from a plain CLI run; disposed at process exit to flush spans.
+using var tracerProvider = AgentTelemetry.TryCreateTracerProvider("LlmBenchmark.Cli");
+
 bool devUiMode = args.Contains("--devui");
 string configPath = args.FirstOrDefault(a => a != "--devui") ?? "config.json";
 if (!File.Exists(configPath))

@@ -92,6 +92,12 @@ public static class DevUiHost
             }).AddAsAIAgent();
         }
 
+        // No-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set (see AgentTelemetry) —
+        // point it at a collector (e.g. a standalone Aspire Dashboard container,
+        // since --devui isn't run under the AppHost) to see the same agent/
+        // workflow traces DevUI's own graph view doesn't provide.
+        AgentTelemetry.AddToServices(builder.Services, "LlmBenchmark.DevUI");
+
         // Required for MapDevUI() below — undocumented as of 1.18.0-preview, where
         // MapDevUI() resolves DevUIAuthFilter from DI but nothing registers it
         // unless AddDevUI() was called first (see microsoft/agent-framework#6368).
