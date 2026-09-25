@@ -27,12 +27,15 @@
     <Compile Remove="Core\**" />
     <Compile Remove="Dashboard\**" />
     <Compile Remove="AppHost\**" />
+    <Compile Remove="tools\**" />
     <Content Remove="Core\**" />
     <Content Remove="Dashboard\**" />
     <Content Remove="AppHost\**" />
+    <Content Remove="tools\**" />
     <None Remove="Core\**" />
     <None Remove="Dashboard\**" />
     <None Remove="AppHost\**" />
+    <None Remove="tools\**" />
   </ItemGroup>
 
 </Project>

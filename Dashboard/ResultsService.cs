@@ -16,7 +16,8 @@ public sealed class ResultsService
     {
         "speed", "context-probe",
         "agent-concurrency", "agent-concurrency-summary",
-        "agent-workflow-stages", "agent-workflow-pipelines"
+        "agent-workflow-stages", "agent-workflow-pipelines",
+        "scaffold-comparison"
     };
 
     public static string BaseDir => AppContext.BaseDirectory;

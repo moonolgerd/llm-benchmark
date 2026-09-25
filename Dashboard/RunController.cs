@@ -149,6 +149,8 @@ public sealed class RunController
             if (counts.Count > 0) config.AgentBenchmark.Workflow.ParallelPipelineCounts = counts;
         }
         if (o.WorkflowRepeatsPerLevel is > 0) config.AgentBenchmark.Workflow.RepeatsPerLevel = o.WorkflowRepeatsPerLevel.Value;
+        if (o.ScaffoldComparisonEnabled is not null) config.ScaffoldComparison.Enabled = o.ScaffoldComparisonEnabled.Value;
+        if (!string.IsNullOrWhiteSpace(o.ScaffoldComparisonModelId)) config.ScaffoldComparison.ModelId = o.ScaffoldComparisonModelId;
     }
 
     public object Status()

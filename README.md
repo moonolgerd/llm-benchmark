@@ -168,11 +168,33 @@ Framework's DevUI, pointed at the same server the benchmark measures. Open
 **http://localhost:5273/devui** in a browser. Useful for poking at a single stage's behavior
 by hand instead of only seeing aggregate CSV numbers.
 
+## Observability (OpenTelemetry traces)
+
+DevUI shows a workflow's *shape*; for a timeline of what an actual run did — per-stage
+timing, token counts, and the underlying LLM calls nested underneath — agent/workflow runs
+emit OpenTelemetry traces. This is a no-op by default and turns on only when
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set, so it never tries to dial a collector that isn't there.
+
+- **Via Aspire (automatic):** `dotnet run --project AppHost` starts the Aspire Dashboard
+  alongside the app dashboard and injects the OTLP endpoint into it automatically — run a
+  benchmark from the dashboard UI and its traces (`agent-workflow.pipeline` →
+  `agent-workflow.stage.*` for the Planner/Coder/Reviewer pipeline, `agent-concurrency.*`
+  for the load test) show up under the **Traces** tab at the URL the AppHost prints.
+- **Via a standalone collector (CLI / `--devui`):** neither is Aspire-orchestrated, so point
+  them at a collector manually, e.g. a local Aspire Dashboard container:
+  ```powershell
+  docker run -d --name aspire-dashboard -p 18888:18888 -p 4317:18889 `
+    -e DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=true mcr.microsoft.com/dotnet/aspire-dashboard:latest
+  $env:OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4317"
+  dotnet run                    # or: dotnet run -- --devui
+  ```
+  Open **http://localhost:18888** for the dashboard.
+
 ## Output files (in `results/`)
 
 | File | Contents |
 |---|---|
-| `speed-*.csv` | Per task+attempt: TTFT, total duration, prompt/completion tokens, tokens/s, VRAM before/after, errors |
+| `speed-*.csv` | Per task+attempt: TTFT, total duration, prompt/completion tokens, tokens/s, **prefill tokens/s**, VRAM before/after, **avg/peak board power (W)**, **tokens/joule**, errors |
 | `context-probe-*.csv` | Per context step: requested tokens, device max context (from `/v1/models`), success, duration, VRAM |
 | `quality-transcripts-*.txt` | Raw model outputs, for manual grading |
 | `agent-concurrency-*.csv` | Per agent+level: TTFT, duration, tokens, tokens/s |
@@ -186,6 +208,12 @@ All files get a `yyyyMMdd-HHmmss` timestamp suffix.
 
 - **Tokens/s** is only reported when generation took ≥ 50 ms; below that, clock resolution
   makes the number meaningless, so the CSV shows `NaN`/blank instead of a garbage value.
+- **Prefill tokens/s** is `promptTokens / TTFT` — a proxy for prompt-processing throughput.
+  Blank when no first-token signal arrived (TTFT was forced equal to total duration).
+- **Power** (`AvgPowerW` / `PeakPowerW` / `TokensPerJoule`) comes from polling
+  `nvidia-smi --query-gpu=power.draw,...` every 500 ms while each request is in flight.
+  `TokensPerJoule` = completion tokens / (avg power × generation seconds). All three
+  columns are blank if `nvidia-smi` reports no board power (common on laptop dGPUs).
 - **Token counts** prefer the server's `usage` field; when absent they fall back to a
   ~4-chars-per-token estimate (fallback, not a substitute).
 - **VRAM** reads the first GPU from `nvidia-smi`; adjust `GpuMonitor.cs` if you have multiple.
@@ -208,7 +236,7 @@ Core/                    LlmBenchmark.Core — shared library, namespace stays L
   ConfigLoader.cs        config JSON load + ${VAR} env placeholder resolution
   OpenAiClient.cs        minimal streaming OpenAI-compatible client (TTFT capture)
   AgentFrameworkRunner.cs  Agent Framework concurrency load + Planner/Coder/Reviewer workflow
-  GpuMonitor.cs          nvidia-smi VRAM reader
+  GpuMonitor.cs          nvidia-smi VRAM + power reader (incl. GpuSampler poll loop)
   TokenEstimator.cs      ~4 chars/token fallback estimator
   ResultsWriter.cs       CSV/transcript writers (shared by CLI and dashboard)
   Models/                config + result record types (incl. BenchmarkRunResult aggregate)

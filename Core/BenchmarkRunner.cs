@@ -80,8 +80,10 @@ public sealed class BenchmarkRunner
                         Log($"  [{task.Name}] attempt {attempt}/{_config.RepeatsPerTask}... ");
 
                         var (vramBefore, _) = GpuMonitor.ReadVram();
+                        using var sampler = new GpuSampler();
                         var chatResult = await _client.StreamChatCompletionAsync(
                             model.Id, task.SystemPrompt, task.Prompt, task.MaxTokens, _config.Sampling, ct);
+                        var power = sampler.Stop();
                         var (vramAfter, _) = GpuMonitor.ReadVram();
 
                         if (!chatResult.Success)
@@ -112,10 +114,26 @@ public sealed class BenchmarkRunner
                             ? completionTok / genSeconds
                             : double.NaN;
 
+                        // Prefill rate = prompt tokens / TTFT. Only meaningful when a real
+                        // first-token signal arrived before the stream ended — otherwise
+                        // TtftMs was forced equal to TotalDurationMs and this is noise.
+                        double ttftSeconds = chatResult.TtftMs / 1000.0;
+                        double prefillTokPerSec = chatResult.FirstTokenSeen && promptTok > 0 &&
+                                                  ttftSeconds >= MinReliableGenSeconds &&
+                                                  chatResult.TtftMs < chatResult.TotalDurationMs
+                            ? promptTok / ttftSeconds
+                            : double.NaN;
+
+                        // Decode efficiency, over the same generation window tok/s uses.
+                        double tokPerJoule = !double.IsNaN(tokPerSec) && power.HasData
+                            ? completionTok / (power.AvgPowerW * genSeconds)
+                            : double.NaN;
+
                         string reasoningNote = chatResult.AnswerIsReasoningOnly ? " [reasoning-only, no final content]" : "";
                         string tokRateDisplay = double.IsNaN(tokPerSec) ? "n/a" : $"{tokPerSec:F1}";
+                        string powerNote = power.HasData ? $", {power.AvgPowerW:F0}W" : "";
                         Log($"TTFT {chatResult.TtftMs:F0}ms, {tokRateDisplay} tok/s, " +
-                             $"{completionTok} tokens, VRAM {vramAfter}MB{reasoningNote}\n");
+                             $"{completionTok} tokens, VRAM {vramAfter}MB{powerNote}{reasoningNote}\n");
 
                         result.SpeedResults.Add(new SpeedResult
                         {
@@ -128,8 +146,12 @@ public sealed class BenchmarkRunner
                             PromptTokensEstimate = promptTok,
                             CompletionTokensEstimate = completionTok,
                             TokensPerSecond = tokPerSec,
+                            PrefillTokensPerSecond = prefillTokPerSec,
                             VramUsedMbBefore = vramBefore,
-                            VramUsedMbAfter = vramAfter
+                            VramUsedMbAfter = vramAfter,
+                            AvgPowerW = power.HasData ? power.AvgPowerW : -1,
+                            PeakPowerW = power.HasData ? power.PeakPowerW : -1,
+                            TokensPerJoule = tokPerJoule
                         });
 
                         result.QualityRecords.Add(new QualityRecord
@@ -264,6 +286,93 @@ public sealed class BenchmarkRunner
                             ct);
                         result.WorkflowStages.AddRange(stages);
                         result.WorkflowPipelines.AddRange(pipelines);
+                    }
+                }
+
+                Log("\n");
+            }
+
+            if (_config.ScaffoldComparison.Enabled)
+            {
+                ct.ThrowIfCancellationRequested();
+                string scaffoldModelId = string.IsNullOrWhiteSpace(_config.ScaffoldComparison.ModelId)
+                    ? _config.Models.FirstOrDefault()?.Id ?? ""
+                    : _config.ScaffoldComparison.ModelId;
+
+                Log(new string('=', 70) + "\n");
+                Log($"SCAFFOLD COMPARISON: raw HTTP vs Agent Framework  (model: {scaffoldModelId})\n");
+                Log(new string('=', 70) + "\n");
+
+                if (string.IsNullOrWhiteSpace(scaffoldModelId))
+                {
+                    Log("  No model configured for scaffoldComparison and no fallback in models[] — skipping.\n");
+                }
+                else if (_config.Tasks.Count == 0)
+                {
+                    Log("  No tasks configured — scaffoldComparison reuses the main task set, so there's nothing to run.\n");
+                }
+                else
+                {
+                    var scaffoldAgentRunner = new AgentFrameworkRunner(_config.BaseUrl, _config.ApiKey, scaffoldModelId);
+
+                    foreach (var task in _config.Tasks)
+                    {
+                        for (int attempt = 1; attempt <= _config.RepeatsPerTask; attempt++)
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            CurrentStage = $"Scaffold comparison: {task.Name} attempt {attempt}/{_config.RepeatsPerTask}";
+                            Log($"  [{task.Name}] attempt {attempt}/{_config.RepeatsPerTask}\n");
+
+                            var raw = await _client.StreamChatCompletionAsync(
+                                scaffoldModelId, task.SystemPrompt, task.Prompt, task.MaxTokens, _config.Sampling, ct);
+                            int rawPromptTok = raw.PromptTokens ?? TokenEstimator.EstimateTokens(task.Prompt);
+                            int rawCompletionTok = raw.CompletionTokens ?? TokenEstimator.EstimateTokens(raw.FullText);
+                            double rawGenSeconds = (raw.TotalDurationMs - raw.TtftMs) / 1000.0;
+                            double rawTokPerSec = raw.Success && rawGenSeconds >= MinReliableGenSeconds
+                                ? rawCompletionTok / rawGenSeconds : double.NaN;
+                            Log(raw.Success
+                                ? $"    raw-http:        TTFT {raw.TtftMs:F0}ms, {rawCompletionTok} tok, prompt {rawPromptTok} tok\n"
+                                : $"    raw-http:        FAILED: {raw.Error}\n");
+                            result.ScaffoldComparisonRuns.Add(new ScaffoldComparisonResult
+                            {
+                                ModelId = scaffoldModelId,
+                                TaskName = task.Name,
+                                Attempt = attempt,
+                                Scaffold = "RawHttp",
+                                Success = raw.Success,
+                                TtftMs = raw.TtftMs,
+                                TotalDurationMs = raw.TotalDurationMs,
+                                PromptTokens = rawPromptTok,
+                                CompletionTokens = rawCompletionTok,
+                                TokensPerSecond = rawTokPerSec,
+                                Error = raw.Error
+                            });
+
+                            var afw = await scaffoldAgentRunner.RunSingleTurnAsync(
+                                task.SystemPrompt, task.Prompt, task.MaxTokens, ct);
+                            int afwPromptTok = afw.PromptTokens ?? TokenEstimator.EstimateTokens(task.Prompt);
+                            int afwCompletionTok = afw.CompletionTokens ?? TokenEstimator.EstimateTokens(afw.FullText);
+                            double afwGenSeconds = (afw.TotalDurationMs - afw.TtftMs) / 1000.0;
+                            double afwTokPerSec = afw.Success && afwGenSeconds >= MinReliableGenSeconds
+                                ? afwCompletionTok / afwGenSeconds : double.NaN;
+                            Log(afw.Success
+                                ? $"    agent-framework: TTFT {afw.TtftMs:F0}ms, {afwCompletionTok} tok, prompt {afwPromptTok} tok\n"
+                                : $"    agent-framework: FAILED: {afw.Error}\n");
+                            result.ScaffoldComparisonRuns.Add(new ScaffoldComparisonResult
+                            {
+                                ModelId = scaffoldModelId,
+                                TaskName = task.Name,
+                                Attempt = attempt,
+                                Scaffold = "AgentFramework",
+                                Success = afw.Success,
+                                TtftMs = afw.TtftMs,
+                                TotalDurationMs = afw.TotalDurationMs,
+                                PromptTokens = afwPromptTok,
+                                CompletionTokens = afwCompletionTok,
+                                TokensPerSecond = afwTokPerSec,
+                                Error = afw.Error
+                            });
+                        }
                     }
                 }
 

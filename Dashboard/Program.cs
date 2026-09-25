@@ -119,6 +119,8 @@ public sealed record RunOverrides(
     string? WorkflowPrompt,
     int? WorkflowMaxTokensPerStage,
     string? WorkflowParallelPipelineCounts,
-    int? WorkflowRepeatsPerLevel);
+    int? WorkflowRepeatsPerLevel,
+    bool? ScaffoldComparisonEnabled,
+    string? ScaffoldComparisonModelId);
 
 public sealed record RunRequest(string? ConfigPath, RunOverrides? Overrides);

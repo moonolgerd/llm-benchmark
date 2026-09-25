@@ -10,8 +10,16 @@ public class SpeedResult
     public int PromptTokensEstimate { get; set; }
     public int CompletionTokensEstimate { get; set; }
     public double TokensPerSecond { get; set; }
+    /// <summary>Prompt-processing rate: prompt tokens / TTFT. NaN when TTFT is unreliable (no first-token signal).</summary>
+    public double PrefillTokensPerSecond { get; set; } = double.NaN;
     public int VramUsedMbBefore { get; set; }
     public int VramUsedMbAfter { get; set; }
+    /// <summary>Mean board power (W) sampled across the request; -1 when nvidia-smi gave no reading.</summary>
+    public double AvgPowerW { get; set; } = -1;
+    /// <summary>Peak board power (W) sampled across the request; -1 when unknown.</summary>
+    public double PeakPowerW { get; set; } = -1;
+    /// <summary>Decode efficiency: completion tokens / (AvgPowerW * generation seconds). NaN when power or tok/s is unavailable.</summary>
+    public double TokensPerJoule { get; set; } = double.NaN;
     public bool Success { get; set; }
     public string? Error { get; set; }
 }

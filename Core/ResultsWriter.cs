@@ -30,14 +30,19 @@ public static class ResultsWriter
             WriteAgentWorkflowStagesCsv(Path.Combine(outDir, $"agent-workflow-stages-{timestamp}.csv"), run.WorkflowStages);
             WriteAgentWorkflowPipelinesCsv(Path.Combine(outDir, $"agent-workflow-pipelines-{timestamp}.csv"), run.WorkflowPipelines);
         }
+
+        if (run.ScaffoldComparisonRuns.Count > 0)
+        {
+            WriteScaffoldComparisonCsv(Path.Combine(outDir, $"scaffold-comparison-{timestamp}.csv"), run.ScaffoldComparisonRuns);
+        }
     }
 
     public static void WriteSpeedCsv(string path, IEnumerable<SpeedResult> results)
     {
         using var writer = new StreamWriter(path, append: false);
         writer.WriteLine("ModelId,TaskName,Attempt,Success,TtftMs,TotalDurationMs," +
-                          "PromptTokensEstimate,CompletionTokensEstimate,TokensPerSecond," +
-                          "VramUsedMbBefore,VramUsedMbAfter,Error");
+                          "PromptTokensEstimate,CompletionTokensEstimate,TokensPerSecond,PrefillTokensPerSecond," +
+                          "VramUsedMbBefore,VramUsedMbAfter,AvgPowerW,PeakPowerW,TokensPerJoule,Error");
 
         foreach (var r in results)
         {
@@ -47,7 +52,11 @@ public static class ResultsWriter
                 r.TotalDurationMs.ToString("F1", CultureInfo.InvariantCulture),
                 r.PromptTokensEstimate, r.CompletionTokensEstimate,
                 r.TokensPerSecond.ToString("F2", CultureInfo.InvariantCulture),
-                r.VramUsedMbBefore, r.VramUsedMbAfter, Csv(r.Error ?? "")));
+                Metric(r.PrefillTokensPerSecond, "F1"),
+                r.VramUsedMbBefore, r.VramUsedMbAfter,
+                Metric(r.AvgPowerW, "F1"), Metric(r.PeakPowerW, "F1"),
+                Metric(r.TokensPerJoule, "F3"),
+                Csv(r.Error ?? "")));
         }
     }
 
@@ -131,6 +140,24 @@ public static class ResultsWriter
         }
     }
 
+    public static void WriteScaffoldComparisonCsv(string path, IEnumerable<ScaffoldComparisonResult> results)
+    {
+        using var writer = new StreamWriter(path, append: false);
+        writer.WriteLine("ModelId,TaskName,Attempt,Scaffold,Success,TtftMs,TotalDurationMs," +
+                          "PromptTokens,CompletionTokens,TokensPerSecond,Error");
+
+        foreach (var r in results)
+        {
+            writer.WriteLine(string.Join(",",
+                Csv(r.ModelId), Csv(r.TaskName), r.Attempt, Csv(r.Scaffold), r.Success,
+                r.TtftMs.ToString("F1", CultureInfo.InvariantCulture),
+                r.TotalDurationMs.ToString("F1", CultureInfo.InvariantCulture),
+                r.PromptTokens, r.CompletionTokens,
+                r.TokensPerSecond.ToString("F2", CultureInfo.InvariantCulture),
+                Csv(r.Error ?? "")));
+        }
+    }
+
     public static void WriteQualityTranscripts(string path, IEnumerable<QualityRecord> records)
     {
         using var writer = new StreamWriter(path, append: false);
@@ -143,6 +170,11 @@ public static class ResultsWriter
             writer.WriteLine();
         }
     }
+
+    // Optional numeric metric: blank cell when unavailable (NaN or a negative
+    // sentinel) rather than a literal "NaN"/"-1" the charts would have to special-case.
+    private static string Metric(double value, string format) =>
+        double.IsNaN(value) || value < 0 ? "" : value.ToString(format, CultureInfo.InvariantCulture);
 
     private static string Csv(string field)
     {
