@@ -161,6 +161,17 @@
   </section>
 
   <section class="panel">
+    <details>
+      <summary>Scaffold comparison (optional)</summary>
+      <div class="form-grid">
+        <div class="field"><label><input id="ovScaffoldEnabled" type="checkbox" /> Enabled</label></div>
+        <div class="field"><label>Model id</label><input id="ovScaffoldModel" type="text" placeholder="(from config)" spellcheck="false" /></div>
+      </div>
+      <p class="note">Runs every configured task (the same set the speed pass uses) through both the raw-HTTP client and Microsoft Agent Framework against the same model, to surface the framework's own per-request overhead — prompt tokens, TTFT, duration — on identical input.</p>
+    </details>
+  </section>
+
+  <section class="panel">
     <h2>Runs</h2>
     <table id="runsTable">
       <thead><tr><th style="width:180px">timestamp</th><th>datasets</th></tr></thead>
@@ -173,10 +184,15 @@
 
     <div id="speedSection" style="display:none">
       <h3>Speed &amp; quality — per model · task</h3>
-      <p class="note">Successful attempts only. tok/s is excluded (n/a) when the generation window was under 50&nbsp;ms — below that, clock resolution makes the number meaningless.</p>
+      <p class="note">Successful attempts only. tok/s is excluded (n/a) when the generation window was under 50&nbsp;ms — below that, clock resolution makes the number meaningless. Prefill = prompt tokens / TTFT. Power/efficiency charts are blank unless nvidia-smi reported board power.</p>
       <div class="chart-row">
         <div class="chart-box"><canvas id="chartSpeedTps"></canvas></div>
         <div class="chart-box"><canvas id="chartSpeedTtft"></canvas></div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-box"><canvas id="chartSpeedPrefill"></canvas></div>
+        <div class="chart-box"><canvas id="chartSpeedPower"></canvas></div>
+        <div class="chart-box"><canvas id="chartSpeedEff"></canvas></div>
       </div>
     </div>
 
@@ -204,6 +220,21 @@
       <table>
         <thead><tr><th>stage</th><th>mean duration (ms)</th><th>mean tok/s</th><th>ok / total</th></tr></thead>
         <tbody id="wfBody"></tbody>
+      </table>
+    </div>
+
+    <div id="scaffoldSection" style="display:none">
+      <h3>Scaffold comparison — raw HTTP vs Agent Framework</h3>
+      <p class="note">Same task and prompt sent through both paths against the same model. Δ columns are Agent Framework minus raw HTTP — positive means the framework used/took more.</p>
+      <div class="chart-box wide"><canvas id="chartScaffold"></canvas></div>
+      <table>
+        <thead><tr>
+          <th>task</th>
+          <th>raw prompt tok</th><th>agent prompt tok</th><th>Δ prompt tok</th>
+          <th>raw completion tok</th><th>agent completion tok</th><th>Δ completion tok</th>
+          <th>raw duration (ms)</th><th>agent duration (ms)</th><th>Δ duration (ms)</th>
+        </tr></thead>
+        <tbody id="scaffoldBody"></tbody>
       </table>
     </div>
 
@@ -366,6 +397,10 @@ function renderRun(data, transcripts) {
   if ((wfPipelines && wfPipelines.length) || (wfStages && wfStages.length))
     renderWorkflow(wfPipelines || [], wfStages || []);
 
+  const scaffold = data["scaffold-comparison"];
+  showSection("scaffoldSection", !!(scaffold && scaffold.length));
+  if (scaffold && scaffold.length) renderScaffold(scaffold);
+
   renderTranscripts(transcripts);
 }
 
@@ -374,10 +409,13 @@ function renderSpeed(rows) {
   for (const r of rows) {
     if (!r.Success) continue;
     const key = `${r.ModelId} / ${r.TaskName}`;
-    if (!groups.has(key)) groups.set(key, { tps: [], ttft: [] });
+    if (!groups.has(key)) groups.set(key, { tps: [], ttft: [], prefill: [], power: [], eff: [] });
     const g = groups.get(key);
     if (typeof r.TokensPerSecond === "number") g.tps.push(r.TokensPerSecond);
     if (typeof r.TtftMs === "number") g.ttft.push(r.TtftMs);
+    if (typeof r.PrefillTokensPerSecond === "number") g.prefill.push(r.PrefillTokensPerSecond);
+    if (typeof r.AvgPowerW === "number") g.power.push(r.AvgPowerW);
+    if (typeof r.TokensPerJoule === "number") g.eff.push(r.TokensPerJoule);
   }
   const labels = [...groups.keys()];
   makeChart("chartSpeedTps", {
@@ -389,6 +427,21 @@ function renderSpeed(rows) {
     type: "bar",
     data: { labels, datasets: [{ label: "mean TTFT (ms)", data: labels.map(l => mean(groups.get(l).ttft)), backgroundColor: "#39c07f" }] },
     options: barOptions("ms")
+  });
+  makeChart("chartSpeedPrefill", {
+    type: "bar",
+    data: { labels, datasets: [{ label: "mean prefill tokens/s", data: labels.map(l => mean(groups.get(l).prefill)), backgroundColor: "#e0a13c" }] },
+    options: barOptions("tokens/s")
+  });
+  makeChart("chartSpeedPower", {
+    type: "bar",
+    data: { labels, datasets: [{ label: "mean board power (W)", data: labels.map(l => mean(groups.get(l).power)), backgroundColor: "#d9534f" }] },
+    options: barOptions("watts")
+  });
+  makeChart("chartSpeedEff", {
+    type: "bar",
+    data: { labels, datasets: [{ label: "mean tokens/joule", data: labels.map(l => mean(groups.get(l).eff)), backgroundColor: "#7cc4b8" }] },
+    options: barOptions("tokens/J")
   });
 }
 
@@ -490,6 +543,52 @@ function renderWorkflow(pipelines, stages) {
   }
 }
 
+function renderScaffold(rows) {
+  const emptyGroup = () => ({ ttft: [], dur: [], prompt: [], completion: [] });
+  const byTask = new Map();
+  for (const r of rows) {
+    if (!r.Success) continue;
+    if (!byTask.has(r.TaskName)) byTask.set(r.TaskName, { RawHttp: emptyGroup(), AgentFramework: emptyGroup() });
+    const g = byTask.get(r.TaskName)[r.Scaffold];
+    if (!g) continue;
+    if (typeof r.TtftMs === "number") g.ttft.push(r.TtftMs);
+    if (typeof r.TotalDurationMs === "number") g.dur.push(r.TotalDurationMs);
+    if (typeof r.PromptTokens === "number") g.prompt.push(r.PromptTokens);
+    if (typeof r.CompletionTokens === "number") g.completion.push(r.CompletionTokens);
+  }
+  const tasks = [...byTask.keys()];
+
+  makeChart("chartScaffold", {
+    type: "bar",
+    data: {
+      labels: tasks,
+      datasets: [
+        { label: "raw HTTP — mean duration (ms)", data: tasks.map(t => mean(byTask.get(t).RawHttp.dur)), backgroundColor: "#4f8cff" },
+        { label: "Agent Framework — mean duration (ms)", data: tasks.map(t => mean(byTask.get(t).AgentFramework.dur)), backgroundColor: "#e0a13c" }
+      ]
+    },
+    options: barOptions("ms")
+  });
+
+  const delta = (a, b) => (a == null || b == null) ? "n/a" : fmt(b - a, 0);
+  const tbody = $("scaffoldBody");
+  tbody.innerHTML = "";
+  for (const t of tasks) {
+    const raw = byTask.get(t).RawHttp, afw = byTask.get(t).AgentFramework;
+    const rawPrompt = mean(raw.prompt), afwPrompt = mean(afw.prompt);
+    const rawCompletion = mean(raw.completion), afwCompletion = mean(afw.completion);
+    const rawDur = mean(raw.dur), afwDur = mean(afw.dur);
+    const tr = document.createElement("tr");
+    tr.append(
+      td(t),
+      td(fmt(rawPrompt, 0)), td(fmt(afwPrompt, 0)), td(delta(rawPrompt, afwPrompt)),
+      td(fmt(rawCompletion, 0)), td(fmt(afwCompletion, 0)), td(delta(rawCompletion, afwCompletion)),
+      td(fmt(rawDur, 0)), td(fmt(afwDur, 0)), td(delta(rawDur, afwDur))
+    );
+    tbody.appendChild(tr);
+  }
+}
+
 function renderTranscripts(list) {
   showSection("transcriptsSection", list.length > 0);
   const box = $("transcripts");
@@ -537,7 +636,9 @@ function readOverrides() {
     workflowPrompt: $("ovWfPrompt").value.trim() || undefined,
     workflowMaxTokensPerStage: $("ovWfMaxTokens").value.length ? Number($("ovWfMaxTokens").value) : undefined,
     workflowParallelPipelineCounts: $("ovWfParallel").value.trim() || undefined,
-    workflowRepeatsPerLevel: $("ovWfRepeats").value.length ? Number($("ovWfRepeats").value) : undefined
+    workflowRepeatsPerLevel: $("ovWfRepeats").value.length ? Number($("ovWfRepeats").value) : undefined,
+    scaffoldComparisonEnabled: $("ovScaffoldEnabled").checked ? true : undefined,
+    scaffoldComparisonModelId: $("ovScaffoldModel").value.trim() || undefined
   };
 }
 

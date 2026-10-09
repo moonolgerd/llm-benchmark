@@ -86,3 +86,19 @@ public class WorkflowStageSpec
     [JsonPropertyName("instructions")]
     public string Instructions { get; set; } = "";
 }
+
+/// <summary>
+/// Runs the same fixed task set (config.tasks, config.repeatsPerTask) through
+/// both the raw-HTTP OpenAiClient path and the Microsoft Agent Framework path
+/// against the same model, so the framework's own per-request overhead
+/// (prompt-token padding, TTFT, wall-clock) on identical input is measured
+/// directly instead of guessed at from unrelated published benchmarks.
+/// </summary>
+public class ScaffoldComparisonConfig
+{
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; } = false;
+
+    [JsonPropertyName("modelId")]
+    public string ModelId { get; set; } = "";
+}

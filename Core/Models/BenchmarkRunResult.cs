@@ -13,4 +13,5 @@ public sealed class BenchmarkRunResult
     public List<AgentConcurrencyLevelSummary> AgentConcurrencySummaries { get; } = new();
     public List<AgentWorkflowStageResult> WorkflowStages { get; } = new();
     public List<AgentWorkflowPipelineSummary> WorkflowPipelines { get; } = new();
+    public List<ScaffoldComparisonResult> ScaffoldComparisonRuns { get; } = new();
 }

@@ -10,6 +10,19 @@ using OpenAI.Chat;
 
 namespace LlmBenchmark;
 
+/// <summary>Result of one RunSingleTurnAsync call — mirrors StreamedChatResult's shape
+/// so raw-HTTP and Agent Framework runs of the same prompt are directly comparable.</summary>
+public class ScaffoldChatResult
+{
+    public bool Success { get; set; }
+    public string? Error { get; set; }
+    public double TtftMs { get; set; }
+    public double TotalDurationMs { get; set; }
+    public string FullText { get; set; } = "";
+    public int? PromptTokens { get; set; }     // populated only if the server sent usage
+    public int? CompletionTokens { get; set; } // populated only if the server sent usage
+}
+
 /// <summary>
 /// Runs the same local OpenAI-compatible server (Unsloth) through Microsoft
 /// Agent Framework instead of the raw-HTTP OpenAiClient, to see how it behaves
@@ -64,11 +77,12 @@ public class AgentFrameworkRunner
     // workflow graph's executor label (GetDescriptiveId) falls back to .Id only
     // when .Name is empty, and .Id never touches AuthorName — so passing id
     // here gives readable graph/DevUI labels without reintroducing the bug.
-    private ChatClientAgent MakeAgent(string? instructions, int maxTokens, string? id = null) =>
+    private ChatClientAgent MakeAgent(string? instructions, int maxTokens, string? id = null,
+        SamplingConfig? sampling = null) =>
         new(_chatClient, new ChatClientAgentOptions
         {
             Id = id,
-            ChatOptions = BuildChatOptions(instructions, maxTokens)
+            ChatOptions = BuildChatOptions(instructions, maxTokens, sampling)
         });
 
     // enable_thinking is Unsloth/vLLM-specific, not part of the standard OpenAI
@@ -77,7 +91,16 @@ public class AgentFrameworkRunner
     // the whole max-tokens budget and leave the visible .Text empty (matching
     // the "reasoning-only" case OpenAiClient.cs already special-cases for the
     // raw-HTTP path) — the JsonPatch escape hatch reaches the raw request body.
-    public static ChatOptions BuildChatOptions(string? instructions, int maxTokens) => new()
+    //
+    // When a SamplingConfig is supplied (the scaffold comparison does), every
+    // sampling field the raw-HTTP path sends is sent here too, so the two paths
+    // decode under identical settings and a delta can't come from sampling.
+    // temperature/top_p are standard; top_k, min_p, repetition_penalty and
+    // reasoning_effort are provider-specific and go in through the same patch.
+    // With no SamplingConfig it keeps its original behavior (thinking off, server
+    // defaults for everything else).
+    public static ChatOptions BuildChatOptions(string? instructions, int maxTokens,
+        SamplingConfig? sampling = null) => new()
     {
         Instructions = instructions,
         MaxOutputTokens = maxTokens,
@@ -85,7 +108,17 @@ public class AgentFrameworkRunner
         {
             var raw = new ChatCompletionOptions();
 #pragma warning disable SCME0001 // JsonPatch is the documented escape hatch for provider-specific request fields; stable enough for a benchmark tool.
-            raw.Patch.Set("$.enable_thinking"u8, false);
+            raw.Patch.Set("$.enable_thinking"u8, sampling?.EnableThinking ?? false);
+            if (sampling is not null)
+            {
+                raw.Temperature = (float)sampling.Temperature;
+                raw.TopP = (float)sampling.TopP;
+                raw.Patch.Set("$.top_k"u8, sampling.TopK);
+                raw.Patch.Set("$.min_p"u8, sampling.MinP);
+                raw.Patch.Set("$.repetition_penalty"u8, sampling.RepetitionPenalty);
+                if (!string.IsNullOrWhiteSpace(sampling.ReasoningEffort))
+                    raw.Patch.Set("$.reasoning_effort"u8, sampling.ReasoningEffort);
+            }
 #pragma warning restore SCME0001
             return raw;
         }
@@ -234,6 +267,75 @@ public class AgentFrameworkRunner
             {
                 Success = false,
                 DurationMs = sw.Elapsed.TotalMilliseconds,
+                Error = ex.Message
+            };
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Single-turn run for scaffold comparison: one agent, one prompt, mirrors
+    // OpenAiClient.StreamChatCompletionAsync's shape so BenchmarkRunner can
+    // run the identical task through both paths and diff the results.
+    // ---------------------------------------------------------------------
+
+    public async Task<ScaffoldChatResult> RunSingleTurnAsync(
+        string? instructions, string prompt, int maxTokens, SamplingConfig sampling,
+        CancellationToken ct = default)
+    {
+        var agent = MakeAgent(instructions, maxTokens, sampling: sampling);
+
+        Activity.Current = null;
+        using Activity? activity = AgentTelemetry.ActivitySource.StartActivity("agent-scaffold.run");
+
+        var sw = Stopwatch.StartNew();
+        double ttftMs = -1;
+        var sb = new StringBuilder();
+        long? realPromptTokens = null;
+        long? realCompletionTokens = null;
+
+        try
+        {
+            await foreach (var update in agent.RunStreamingAsync(prompt, cancellationToken: ct))
+            {
+                string? text = update.Text;
+                if (!string.IsNullOrEmpty(text))
+                {
+                    if (ttftMs < 0) ttftMs = sw.Elapsed.TotalMilliseconds;
+                    sb.Append(text);
+                }
+
+                foreach (var content in update.Contents)
+                {
+                    if (content is UsageContent usage)
+                    {
+                        if (usage.Details.InputTokenCount is long inTok) realPromptTokens = inTok;
+                        if (usage.Details.OutputTokenCount is long outTok) realCompletionTokens = outTok;
+                    }
+                }
+            }
+            sw.Stop();
+            if (ttftMs < 0) ttftMs = sw.Elapsed.TotalMilliseconds;
+
+            activity?.SetTag("run.ttft_ms", ttftMs).SetTag("run.duration_ms", sw.Elapsed.TotalMilliseconds);
+
+            return new ScaffoldChatResult
+            {
+                Success = true,
+                TtftMs = ttftMs,
+                TotalDurationMs = sw.Elapsed.TotalMilliseconds,
+                FullText = sb.ToString(),
+                PromptTokens = realPromptTokens.HasValue ? (int)realPromptTokens.Value : null,
+                CompletionTokens = realCompletionTokens.HasValue ? (int)realCompletionTokens.Value : null
+            };
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            return new ScaffoldChatResult
+            {
+                Success = false,
+                TotalDurationMs = sw.Elapsed.TotalMilliseconds,
                 Error = ex.Message
             };
         }

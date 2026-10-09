@@ -80,8 +80,10 @@ public sealed class BenchmarkRunner
                         Log($"  [{task.Name}] attempt {attempt}/{_config.RepeatsPerTask}... ");
 
                         var (vramBefore, _) = GpuMonitor.ReadVram();
+                        using var sampler = new GpuSampler();
                         var chatResult = await _client.StreamChatCompletionAsync(
                             model.Id, task.SystemPrompt, task.Prompt, task.MaxTokens, _config.Sampling, ct);
+                        var power = sampler.Stop();
                         var (vramAfter, _) = GpuMonitor.ReadVram();
 
                         if (!chatResult.Success)
@@ -112,10 +114,32 @@ public sealed class BenchmarkRunner
                             ? completionTok / genSeconds
                             : double.NaN;
 
+                        // Prefill rate = prompt tokens / TTFT. Only meaningful when a real
+                        // first-token signal arrived before the stream ended — otherwise
+                        // TtftMs was forced equal to TotalDurationMs and this is noise.
+                        double ttftSeconds = chatResult.TtftMs / 1000.0;
+                        double prefillTokPerSec = chatResult.FirstTokenSeen && promptTok > 0 &&
+                                                  ttftSeconds >= MinReliableGenSeconds &&
+                                                  chatResult.TtftMs < chatResult.TotalDurationMs
+                            ? promptTok / ttftSeconds
+                            : double.NaN;
+
+                        // End-to-end efficiency. The sampler brackets the whole request
+                        // (prefill + first-token wait + decode), so average power is only
+                        // valid against the whole request's duration. Multiplying it by the
+                        // post-first-token window alone does not give the energy of either
+                        // interval.
+                        double totalSeconds = chatResult.TotalDurationMs / 1000.0;
+                        double tokPerJoule = power.HasData && completionTok > 0 &&
+                                             totalSeconds >= MinReliableGenSeconds
+                            ? completionTok / (power.AvgPowerW * totalSeconds)
+                            : double.NaN;
+
                         string reasoningNote = chatResult.AnswerIsReasoningOnly ? " [reasoning-only, no final content]" : "";
                         string tokRateDisplay = double.IsNaN(tokPerSec) ? "n/a" : $"{tokPerSec:F1}";
+                        string powerNote = power.HasData ? $", {power.AvgPowerW:F0}W" : "";
                         Log($"TTFT {chatResult.TtftMs:F0}ms, {tokRateDisplay} tok/s, " +
-                             $"{completionTok} tokens, VRAM {vramAfter}MB{reasoningNote}\n");
+                             $"{completionTok} tokens, VRAM {vramAfter}MB{powerNote}{reasoningNote}\n");
 
                         result.SpeedResults.Add(new SpeedResult
                         {
@@ -128,8 +152,12 @@ public sealed class BenchmarkRunner
                             PromptTokensEstimate = promptTok,
                             CompletionTokensEstimate = completionTok,
                             TokensPerSecond = tokPerSec,
+                            PrefillTokensPerSecond = prefillTokPerSec,
                             VramUsedMbBefore = vramBefore,
-                            VramUsedMbAfter = vramAfter
+                            VramUsedMbAfter = vramAfter,
+                            AvgPowerW = power.HasData ? power.AvgPowerW : -1,
+                            PeakPowerW = power.HasData ? power.PeakPowerW : -1,
+                            TokensPerJoule = tokPerJoule
                         });
 
                         result.QualityRecords.Add(new QualityRecord
@@ -210,7 +238,9 @@ public sealed class BenchmarkRunner
                             Succeeded = probeResult.Success,
                             TotalDurationMs = probeResult.TotalDurationMs,
                             VramUsedMbAfter = vramAfterProbe,
-                            Error = probeResult.Error
+                            Error = probeResult.Error,
+                            TtftMs = probeResult.Success && probeResult.FirstTokenSeen ? probeResult.TtftMs : -1,
+                            PromptTokens = probeResult.PromptTokens ?? -1
                         });
 
                         // Stop climbing once it fails — higher steps will fail too.
@@ -264,6 +294,132 @@ public sealed class BenchmarkRunner
                             ct);
                         result.WorkflowStages.AddRange(stages);
                         result.WorkflowPipelines.AddRange(pipelines);
+                    }
+                }
+
+                Log("\n");
+            }
+
+            if (_config.ScaffoldComparison.Enabled)
+            {
+                ct.ThrowIfCancellationRequested();
+                string scaffoldModelId = string.IsNullOrWhiteSpace(_config.ScaffoldComparison.ModelId)
+                    ? _config.Models.FirstOrDefault()?.Id ?? ""
+                    : _config.ScaffoldComparison.ModelId;
+
+                Log(new string('=', 70) + "\n");
+                Log($"SCAFFOLD COMPARISON: raw HTTP vs Agent Framework  (model: {scaffoldModelId})\n");
+                Log(new string('=', 70) + "\n");
+
+                if (string.IsNullOrWhiteSpace(scaffoldModelId))
+                {
+                    Log("  No model configured for scaffoldComparison and no fallback in models[] — skipping.\n");
+                }
+                else if (_config.Tasks.Count == 0)
+                {
+                    Log("  No tasks configured — scaffoldComparison reuses the main task set, so there's nothing to run.\n");
+                }
+                else
+                {
+                    var scaffoldAgentRunner = new AgentFrameworkRunner(_config.BaseUrl, _config.ApiKey, scaffoldModelId);
+
+                    async Task RunRawAsync(TaskPrompt task, int attempt, int order)
+                    {
+                        var raw = await _client.StreamChatCompletionAsync(
+                            scaffoldModelId, task.SystemPrompt, task.Prompt, task.MaxTokens, _config.Sampling, ct);
+                        int promptTok = raw.PromptTokens ?? TokenEstimator.EstimateTokens(task.Prompt);
+                        int completionTok = raw.CompletionTokens ?? TokenEstimator.EstimateTokens(raw.FullText);
+                        double genSeconds = (raw.TotalDurationMs - raw.TtftMs) / 1000.0;
+                        double tokPerSec = raw.Success && genSeconds >= MinReliableGenSeconds
+                            ? completionTok / genSeconds : double.NaN;
+                        Log(raw.Success
+                            ? $"    raw-http:        TTFT {raw.TtftMs:F0}ms, {completionTok} tok, prompt {promptTok} tok\n"
+                            : $"    raw-http:        FAILED: {raw.Error}\n");
+                        result.ScaffoldComparisonRuns.Add(new ScaffoldComparisonResult
+                        {
+                            ModelId = scaffoldModelId,
+                            TaskName = task.Name,
+                            Attempt = attempt,
+                            Scaffold = "RawHttp",
+                            Success = raw.Success,
+                            TtftMs = raw.TtftMs,
+                            TotalDurationMs = raw.TotalDurationMs,
+                            PromptTokens = promptTok,
+                            CompletionTokens = completionTok,
+                            TokensPerSecond = tokPerSec,
+                            Error = raw.Error,
+                            RunOrder = order
+                        });
+                    }
+
+                    async Task RunAfwAsync(TaskPrompt task, int attempt, int order)
+                    {
+                        var afw = await scaffoldAgentRunner.RunSingleTurnAsync(
+                            task.SystemPrompt, task.Prompt, task.MaxTokens, _config.Sampling, ct);
+                        int promptTok = afw.PromptTokens ?? TokenEstimator.EstimateTokens(task.Prompt);
+                        int completionTok = afw.CompletionTokens ?? TokenEstimator.EstimateTokens(afw.FullText);
+                        double genSeconds = (afw.TotalDurationMs - afw.TtftMs) / 1000.0;
+                        double tokPerSec = afw.Success && genSeconds >= MinReliableGenSeconds
+                            ? completionTok / genSeconds : double.NaN;
+                        Log(afw.Success
+                            ? $"    agent-framework: TTFT {afw.TtftMs:F0}ms, {completionTok} tok, prompt {promptTok} tok\n"
+                            : $"    agent-framework: FAILED: {afw.Error}\n");
+                        result.ScaffoldComparisonRuns.Add(new ScaffoldComparisonResult
+                        {
+                            ModelId = scaffoldModelId,
+                            TaskName = task.Name,
+                            Attempt = attempt,
+                            Scaffold = "AgentFramework",
+                            Success = afw.Success,
+                            TtftMs = afw.TtftMs,
+                            TotalDurationMs = afw.TotalDurationMs,
+                            PromptTokens = promptTok,
+                            CompletionTokens = completionTok,
+                            TokensPerSecond = tokPerSec,
+                            Error = afw.Error,
+                            RunOrder = order
+                        });
+                    }
+
+                    // Untimed warm-up of both paths. If the preceding section left a
+                    // different model resident, the first timed request would otherwise
+                    // absorb the model load, and the first Agent Framework call would pay
+                    // one-time connection/JIT cost the raw path doesn't.
+                    CurrentStage = "Scaffold comparison: warm-up";
+                    Log("  Warming up both paths (untimed)...\n");
+                    const string warmupPrompt = "Reply with the single word OK.";
+                    var warmRaw = await _client.StreamChatCompletionAsync(
+                        scaffoldModelId, null, warmupPrompt, 16, _config.Sampling, ct);
+                    var warmAfw = await scaffoldAgentRunner.RunSingleTurnAsync(
+                        null, warmupPrompt, 16, _config.Sampling, ct);
+                    if (!warmRaw.Success || !warmAfw.Success)
+                        Log($"  Warm-up problem (raw: {warmRaw.Error ?? "ok"}; agent-framework: {warmAfw.Error ?? "ok"}) — timings below may include load cost.\n");
+
+                    // Each pair sends the identical prompt twice, so a server with
+                    // prompt-prefix caching can serve the second request faster regardless
+                    // of scaffold. Alternate which path goes first (and record it in the
+                    // RunOrder column) so the effect is spread across both paths and can
+                    // be checked in the data instead of being baked into one side.
+                    int pairIndex = 0;
+                    foreach (var task in _config.Tasks)
+                    {
+                        for (int attempt = 1; attempt <= _config.RepeatsPerTask; attempt++)
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            CurrentStage = $"Scaffold comparison: {task.Name} attempt {attempt}/{_config.RepeatsPerTask}";
+                            Log($"  [{task.Name}] attempt {attempt}/{_config.RepeatsPerTask}\n");
+
+                            if (pairIndex++ % 2 == 0)
+                            {
+                                await RunRawAsync(task, attempt, 1);
+                                await RunAfwAsync(task, attempt, 2);
+                            }
+                            else
+                            {
+                                await RunAfwAsync(task, attempt, 1);
+                                await RunRawAsync(task, attempt, 2);
+                            }
+                        }
                     }
                 }
 

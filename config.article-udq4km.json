@@ -1,0 +1,102 @@
+{
+  "_comment": [
+    "Bridge-point run for the article's quant-format confound (see docs/article-plan.md",
+    "decision log, 2026-09-15): Finding #3 compares Qwen NVFP4 (dense) against Ornith",
+    "Q4_K_M (MoE) - two variables at once, architecture AND quant format, since Ornith has",
+    "no NVFP4/GGUF release. This config runs the SAME full battery as config.article.json",
+    "(identical tasks/sampling/contextProbe/agentBenchmark) against unsloth/Qwen3.8-27B-GGUF",
+    "at UD-Q4_K_M instead, on the SAME dense architecture as the NVFP4 entry. That gives two",
+    "comparisons instead of one: Qwen NVFP4 vs Qwen UD-Q4_K_M isolates the quant-format",
+    "effect on identical architecture; Qwen UD-Q4_K_M vs Ornith Q4_K_M is then a much",
+    "closer-to-matched dense-vs-MoE comparison (still not perfect - UD-Q4_K_M's dynamic",
+    "per-layer precision isn't identical to plain Q4_K_M - but far closer than NVFP4 vs",
+    "Q4_K_M). This model also self-speculates (draft accept 83-100%, mean draft len",
+    "2.7-3.0 tok per the 2026-09-04 smoke test) so Finding #2's MTP framing still applies.",
+    "Superseding the 2026-09-04 2-task smoke-pass numbers for this model - this is the full",
+    "5-task/3-repeat/context-probe/agent-framework battery, same rigor as the other two."
+  ],
+  "baseUrl": "http://localhost:8888/v1",
+  "apiKey": "${UNSLOTH_API_KEY}",
+  "repeatsPerTask": 3,
+  "sampling": {
+    "temperature": 0.0,
+    "topP": 1.0,
+    "topK": 0,
+    "minP": 0.0,
+    "repetitionPenalty": 1.0,
+    "enableThinking": false
+  },
+  "models": [
+    { "id": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M", "displayName": "Qwen3.8-27B UD-Q4_K_M (dense, quant-format bridge point)" }
+  ],
+  "tasks": [
+    {
+      "name": "strict-json-schema",
+      "systemPrompt": "You output only raw JSON. No markdown fences, no prose, no explanation.",
+      "prompt": "Produce a JSON object for a library book with exactly these keys: title (string), authors (array of strings), year (integer), genres (array of strings from the enum [\"fiction\",\"nonfiction\",\"reference\",\"childrens\"]), available (boolean), copies (object with keys total and checkedOut, both integers). Use: The Go Programming Language, by Alan Donovan and Brian Kernighan, 2015, nonfiction + reference, available, 4 total 1 checked out.",
+      "maxTokens": 400
+    },
+    {
+      "name": "csharp-refactor-di",
+      "systemPrompt": "You are a senior .NET engineer. Return only the code changes needed, with brief explanation.",
+      "prompt": "Given this class:\n\npublic class OrderProcessor\n{\n    private readonly SqlOrderRepository _repo = new SqlOrderRepository();\n    private readonly SmtpEmailSender _email = new SmtpEmailSender();\n\n    public void Process(int orderId)\n    {\n        var order = _repo.GetById(orderId);\n        order.Status = \"Processed\";\n        _repo.Save(order);\n        _email.Send(order.CustomerEmail, \"Your order is processed\");\n    }\n}\n\nExtract interfaces for the repository and email sender, refactor OrderProcessor to use constructor injection, and show the DI registration for a standard ASP.NET Core Program.cs.",
+      "maxTokens": 2200
+    },
+    {
+      "name": "cross-file-reasoning",
+      "systemPrompt": "You are a code reviewer.",
+      "prompt": "File A (UserService.cs):\npublic class UserService\n{\n    private readonly Dictionary<int, User> _cache = new();\n    public User GetUser(int id)\n    {\n        if (_cache.TryGetValue(id, out var u)) return u;\n        var loaded = _db.Load(id);\n        _cache[id] = loaded;\n        return loaded;\n    }\n}\n\nFile B (UserController.cs):\n[HttpPost(\"users/{id}/update\")]\npublic IActionResult UpdateUser(int id, UserDto dto)\n{\n    var user = _userService.GetUser(id);\n    user.Name = dto.Name;\n    _db.Save(user);\n    return Ok();\n}\n\nIdentify the bug that spans both files and explain the fix.",
+      "maxTokens": 1600
+    },
+    {
+      "name": "long-context-needle",
+      "systemPrompt": "Answer only from the provided text. Quote the exact sentence that supports your answer.",
+      "prompt": "Read the following configuration notes and answer: what retry backoff multiplier does the payments service use, and after how many attempts does it give up?\n\n(The notes below are long; the answer appears once.)\n\nThe ingestion service polls every 30 seconds. The catalog service caches for 5 minutes. The payments service retries failed charge calls with an exponential backoff starting at 250ms and a multiplier of 1.8, giving up after 6 attempts and moving the charge to the dead-letter queue. The notification service batches every 10 seconds. The search service reindexes nightly at 02:00 UTC. The auth service rotates signing keys every 24 hours.",
+      "maxTokens": 300
+    },
+    {
+      "name": "agentic-tool-call",
+      "systemPrompt": "You are an autonomous coding agent. When you need to inspect or change files, respond with ONLY a JSON tool call in the form {\"tool\": \"<name>\", \"args\": {...}}. No prose before or after.",
+      "prompt": "The build is failing with: 'CS0246: The type or namespace name IOrderRepository could not be found'. You have access to tools: read_file(path), search_repo(query), write_file(path, content). Decide your next action and emit the tool call.",
+      "maxTokens": 500
+    }
+  ],
+  "contextProbe": {
+    "enabled": true,
+    "tokenSteps": [8192, 16384, 32768, 65536, 98304, 131072, 196608],
+    "fillerText": "The quick brown fox jumps over the lazy dog near the riverbank at dusk. "
+  },
+  "agentBenchmark": {
+    "enabled": true,
+    "modelId": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
+    "concurrencyLoad": {
+      "enabled": true,
+      "agentCounts": [1, 2, 4, 8],
+      "repeatsPerLevel": 2,
+      "instructions": "You are a concise coding assistant.",
+      "prompt": "Write a C# extension method that chunks an IEnumerable<T> into batches of a given size.",
+      "maxTokens": 600
+    },
+    "workflow": {
+      "enabled": true,
+      "prompt": "Add retry-with-backoff to a C# HttpClient wrapper method called FetchAsync(string url).",
+      "maxTokensPerStage": 1500,
+      "parallelPipelineCounts": [1, 2, 4],
+      "repeatsPerLevel": 2,
+      "stages": [
+        {
+          "name": "Planner",
+          "instructions": "You are a senior engineer scoping a small change. List the concrete steps needed, in 3-5 bullet points. Do not write code yet."
+        },
+        {
+          "name": "Coder",
+          "instructions": "You are a senior C# engineer. Given the plan above, write the resulting code. Output only the code and a one-line explanation."
+        },
+        {
+          "name": "Reviewer",
+          "instructions": "You are a code reviewer. Given the code above, point out any bugs or edge cases in 2-3 bullet points, or say 'Looks good' if there are none."
+        }
+      ]
+    }
+  }
+}

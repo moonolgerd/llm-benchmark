@@ -56,5 +56,9 @@ if (config.AgentBenchmark.Enabled)
     Console.WriteLine("  - agent-workflow-stages-*.csv    : per-stage timing within the multi-agent pipeline");
     Console.WriteLine("  - agent-workflow-pipelines-*.csv : whole-pipeline duration per concurrent run");
 }
+if (config.ScaffoldComparison.Enabled)
+{
+    Console.WriteLine("  - scaffold-comparison-*.csv      : same task, raw-HTTP vs Agent Framework, per attempt");
+}
 
 return 0;

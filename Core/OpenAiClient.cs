@@ -12,6 +12,7 @@ public class StreamedChatResult
     public string? Error { get; set; }
     public double TtftMs { get; set; }
     public double TotalDurationMs { get; set; }
+    public bool FirstTokenSeen { get; set; } // false => TtftMs was forced to TotalDurationMs (no content/reasoning chunk ever arrived)
     public string FullText { get; set; } = "";
     public bool AnswerIsReasoningOnly { get; set; } // true if only reasoning_content arrived, no final content
     public int? PromptTokens { get; set; }      // populated only if server sends usage
@@ -282,6 +283,7 @@ public class OpenAiClient
             sw.Stop();
             result.Success = true;
             result.TotalDurationMs = sw.Elapsed.TotalMilliseconds;
+            result.FirstTokenSeen = firstTokenSeen;
 
             if (sb.Length > 0)
             {

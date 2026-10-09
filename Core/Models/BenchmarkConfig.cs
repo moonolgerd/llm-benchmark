@@ -27,6 +27,9 @@ public class BenchmarkConfig
 
     [JsonPropertyName("agentBenchmark")]
     public AgentBenchmarkConfig AgentBenchmark { get; set; } = new();
+
+    [JsonPropertyName("scaffoldComparison")]
+    public ScaffoldComparisonConfig ScaffoldComparison { get; set; } = new();
 }
 
 public class SamplingConfig

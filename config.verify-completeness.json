@@ -1,0 +1,41 @@
+{
+  "_comment": [
+    "Follow-up verification: csharp-refactor-di was the one task that separated the models",
+    "(see docs/quality-rubric.md, including its Regrade section). The real completeness",
+    "failures there were (1) placeholder method bodies that don't compile and (2) a bare",
+    "2-line DI excerpt instead of the literally-requested 'standard Program.cs'. It was",
+    "NOT a case of dropping real logic: that prompt never supplied the concrete",
+    "implementations, so a NotImplementedException stub discarded nothing. This config",
+    "re-tests the generalizable part in a different domain (bash/terminal): given a working",
+    "script, preserve every behavior the prompt explicitly supplies and return the complete",
+    "file rather than a sketch or excerpt - to see whether the pattern is a general",
+    "completeness/fidelity issue or specific to that one C# task. Same models, same",
+    "sampling as config.article.json. Single task, 3 repeats each - fast, targeted, not a",
+    "full re-run."
+  ],
+  "baseUrl": "http://localhost:8888/v1",
+  "apiKey": "${UNSLOTH_API_KEY}",
+  "repeatsPerTask": 3,
+  "sampling": {
+    "temperature": 0.0,
+    "topP": 1.0,
+    "topK": 0,
+    "minP": 0.0,
+    "repetitionPenalty": 1.0,
+    "enableThinking": false
+  },
+  "models": [
+    { "id": "esatapedico/Qwen3.8-27B-NVFP4-MTP-GGUF:Qwen3.8-27B-NVFP4-MTP-HIGH", "displayName": "Qwen3.8-27B NVFP4" },
+    { "id": "ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M", "displayName": "Ornith-1.5-35B-A3B (MoE)" }
+  ],
+  "tasks": [
+    {
+      "name": "bash-script-extend",
+      "systemPrompt": "You are a senior DevOps engineer. Output the complete, updated script only - no diff format, no ellipses, no '// unchanged' placeholders, no prose before or after.",
+      "prompt": "Here is deploy.sh:\n\n#!/usr/bin/env bash\nset -euo pipefail\n\nAPP_DIR=\"/srv/app\"\nBACKUP_DIR=\"/srv/backups\"\nLOG_FILE=\"/var/log/deploy.log\"\n\nlog() {\n  echo \"$(date -u +'%Y-%m-%dT%H:%M:%SZ') $1\" | tee -a \"$LOG_FILE\"\n}\n\nlog \"Starting deploy\"\n\nif [ ! -d \"$APP_DIR\" ]; then\n  log \"ERROR: $APP_DIR does not exist\"\n  exit 1\nfi\n\ntimestamp=$(date +%Y%m%d-%H%M%S)\ntar -czf \"$BACKUP_DIR/app-$timestamp.tar.gz\" -C \"$APP_DIR\" .\nlog \"Backed up current app to $BACKUP_DIR/app-$timestamp.tar.gz\"\n\ngit -C \"$APP_DIR\" pull origin main\nlog \"Pulled latest from main\"\n\nsystemctl restart myapp.service\nlog \"Restarted myapp.service\"\n\nlog \"Deploy finished successfully\"\n\nAdd a health check after the restart: curl http://localhost:8080/health up to 5 times, 2 seconds apart. If none of the 5 attempts return HTTP 200, roll back by extracting the most recently created backup in $BACKUP_DIR over $APP_DIR, restart myapp.service again, log the rollback, and exit 1. Every existing step (the log function, the directory check, the backup, the git pull, the restart, the final success log) must keep working exactly as before. Output the complete updated deploy.sh.",
+      "maxTokens": 1400
+    }
+  ],
+  "contextProbe": { "enabled": false, "tokenSteps": [8192], "fillerText": "x" },
+  "agentBenchmark": { "enabled": false }
+}
