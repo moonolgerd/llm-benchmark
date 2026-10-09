@@ -57,10 +57,25 @@ static string FindRepoRoot()
 
 static List<T> LoadCsv<T>(string path)
 {
+    // Older run CSVs predate some columns (e.g. context-probe TtftMs/PromptTokens);
+    // tolerate their absence rather than failing the whole chart build.
+    var config = new CsvHelper.Configuration.CsvConfiguration(CultureInfo.InvariantCulture)
+    {
+        MissingFieldFound = null,
+        HeaderValidated = null,
+    };
     using var reader = new StreamReader(path);
-    using var csv = new CsvReader(reader, CultureInfo.InvariantCulture);
+    using var csv = new CsvReader(reader, config);
     return csv.GetRecords<T>().ToList();
 }
+
+// Completion tokens per joule of whole-request energy. AvgPowerW was sampled across the
+// whole request, so it is only valid against the whole request's duration. The recorded
+// TokensPerJoule column in runs from before the Core fix multiplied it by the
+// post-first-token window only, which overstates efficiency — so recompute from the raw
+// columns instead of trusting that column.
+static double EndToEndTokensPerJoule(SpeedRow r) =>
+    r.CompletionTokensEstimate / (r.AvgPowerW * r.TotalDurationMs / 1000.0);
 
 static void StyleAndSave(Plot plot, string title, string yLabel, string fileName, string outDir, int w = 900, int h = 600)
 {
@@ -116,8 +131,8 @@ void BuildPowerAndEfficiencyBars()
     }
     {
         var plot = new Plot();
-        double qwenJ = speedRows.Where(r => r.ModelId == QwenModelId).Average(r => r.TokensPerJoule);
-        double ornithJ = speedRows.Where(r => r.ModelId == OrnithModelId).Average(r => r.TokensPerJoule);
+        double qwenJ = speedRows.Where(r => r.ModelId == QwenModelId).Average(EndToEndTokensPerJoule);
+        double ornithJ = speedRows.Where(r => r.ModelId == OrnithModelId).Average(EndToEndTokensPerJoule);
         Bar[] bars =
         [
             new() { Position = 1, Value = qwenJ, FillColor = qwenColor },
@@ -129,7 +144,7 @@ void BuildPowerAndEfficiencyBars()
         plot.Axes.Bottom.MajorTickStyle.Length = 0;
         plot.Axes.Margins(bottom: 0);
         plot.HideGrid();
-        StyleAndSave(plot, "Decode Efficiency", "tokens / joule", "tokens-per-joule-bar.png", outDir);
+        StyleAndSave(plot, "Energy Efficiency (end-to-end, whole request)", "completion tokens / joule", "tokens-per-joule-bar.png", outDir);
     }
 }
 
@@ -185,9 +200,23 @@ void BuildPrefillTpsGroupedBar()
     plot.Axes.Bottom.Label.Text = "requested context size";
     plot.Axes.Margins(bottom: 0);
     plot.HideGrid();
-    StyleAndSave(plot, "Prefill Throughput vs. Context Size (context-probe-derived)", "tokens / second", "prefill-tps-grouped-bar.png", outDir);
 
-    static double PrefillTps(ContextProbeRow r) => r.RequestedContextTokens / (r.TotalDurationMs / 1000.0);
+    // Prompt throughput is prompt tokens / time-to-first-token. Runs recorded before the
+    // context probe captured those two fields only have requested tokens and total
+    // duration; that fallback folds up to 100 generated tokens into the denominator, so it
+    // is labelled as end-to-end rather than passed off as prefill.
+    bool measured = contextRows.All(HasMeasuredPrefill);
+    string title = measured
+        ? "Prefill Throughput vs. Context Size (prompt tokens / TTFT)"
+        : "Prompt Throughput vs. Context Size\n(requested tokens / total time; includes up to 100 generated tokens)";
+    StyleAndSave(plot, title, measured ? "prefill tokens / second" : "end-to-end tokens / second",
+        "prefill-tps-grouped-bar.png", outDir);
+
+    static bool HasMeasuredPrefill(ContextProbeRow r) => r.TtftMs is > 0 && r.PromptTokens is > 0;
+
+    static double PrefillTps(ContextProbeRow r) => HasMeasuredPrefill(r)
+        ? r.PromptTokens!.Value / (r.TtftMs!.Value / 1000.0)
+        : r.RequestedContextTokens / (r.TotalDurationMs / 1000.0);
 }
 
 void BuildContextVsVramLine()
@@ -312,8 +341,8 @@ void BuildMtpOnOffComparison()
     double onTps = onRows.Average(r => r.TokensPerSecond);
     double offPower = offRows.Average(r => r.AvgPowerW);
     double onPower = onRows.Average(r => r.AvgPowerW);
-    double offEff = offRows.Average(r => r.TokensPerJoule);
-    double onEff = onRows.Average(r => r.TokensPerJoule);
+    double offEff = offRows.Average(EndToEndTokensPerJoule);
+    double onEff = onRows.Average(EndToEndTokensPerJoule);
 
     double PctChange(double off, double on) => (on - off) / off * 100.0;
 
@@ -354,6 +383,7 @@ sealed class SpeedRow
     public bool Success { get; set; }
     public double TtftMs { get; set; }
     public double TotalDurationMs { get; set; }
+    public int CompletionTokensEstimate { get; set; }
     public double TokensPerSecond { get; set; }
     public double AvgPowerW { get; set; }
     public double PeakPowerW { get; set; }
@@ -368,6 +398,8 @@ sealed class ContextProbeRow
     public bool Succeeded { get; set; }
     public double TotalDurationMs { get; set; }
     public double VramUsedMbAfter { get; set; }
+    public double? TtftMs { get; set; }
+    public int? PromptTokens { get; set; }
 }
 
 sealed class ConcurrencySummaryRow

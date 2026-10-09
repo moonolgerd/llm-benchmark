@@ -124,9 +124,15 @@ public sealed class BenchmarkRunner
                             ? promptTok / ttftSeconds
                             : double.NaN;
 
-                        // Decode efficiency, over the same generation window tok/s uses.
-                        double tokPerJoule = !double.IsNaN(tokPerSec) && power.HasData
-                            ? completionTok / (power.AvgPowerW * genSeconds)
+                        // End-to-end efficiency. The sampler brackets the whole request
+                        // (prefill + first-token wait + decode), so average power is only
+                        // valid against the whole request's duration. Multiplying it by the
+                        // post-first-token window alone does not give the energy of either
+                        // interval.
+                        double totalSeconds = chatResult.TotalDurationMs / 1000.0;
+                        double tokPerJoule = power.HasData && completionTok > 0 &&
+                                             totalSeconds >= MinReliableGenSeconds
+                            ? completionTok / (power.AvgPowerW * totalSeconds)
                             : double.NaN;
 
                         string reasoningNote = chatResult.AnswerIsReasoningOnly ? " [reasoning-only, no final content]" : "";
@@ -232,7 +238,9 @@ public sealed class BenchmarkRunner
                             Succeeded = probeResult.Success,
                             TotalDurationMs = probeResult.TotalDurationMs,
                             VramUsedMbAfter = vramAfterProbe,
-                            Error = probeResult.Error
+                            Error = probeResult.Error,
+                            TtftMs = probeResult.Success && probeResult.FirstTokenSeen ? probeResult.TtftMs : -1,
+                            PromptTokens = probeResult.PromptTokens ?? -1
                         });
 
                         // Stop climbing once it fails — higher steps will fail too.
@@ -315,6 +323,84 @@ public sealed class BenchmarkRunner
                 {
                     var scaffoldAgentRunner = new AgentFrameworkRunner(_config.BaseUrl, _config.ApiKey, scaffoldModelId);
 
+                    async Task RunRawAsync(TaskPrompt task, int attempt, int order)
+                    {
+                        var raw = await _client.StreamChatCompletionAsync(
+                            scaffoldModelId, task.SystemPrompt, task.Prompt, task.MaxTokens, _config.Sampling, ct);
+                        int promptTok = raw.PromptTokens ?? TokenEstimator.EstimateTokens(task.Prompt);
+                        int completionTok = raw.CompletionTokens ?? TokenEstimator.EstimateTokens(raw.FullText);
+                        double genSeconds = (raw.TotalDurationMs - raw.TtftMs) / 1000.0;
+                        double tokPerSec = raw.Success && genSeconds >= MinReliableGenSeconds
+                            ? completionTok / genSeconds : double.NaN;
+                        Log(raw.Success
+                            ? $"    raw-http:        TTFT {raw.TtftMs:F0}ms, {completionTok} tok, prompt {promptTok} tok\n"
+                            : $"    raw-http:        FAILED: {raw.Error}\n");
+                        result.ScaffoldComparisonRuns.Add(new ScaffoldComparisonResult
+                        {
+                            ModelId = scaffoldModelId,
+                            TaskName = task.Name,
+                            Attempt = attempt,
+                            Scaffold = "RawHttp",
+                            Success = raw.Success,
+                            TtftMs = raw.TtftMs,
+                            TotalDurationMs = raw.TotalDurationMs,
+                            PromptTokens = promptTok,
+                            CompletionTokens = completionTok,
+                            TokensPerSecond = tokPerSec,
+                            Error = raw.Error,
+                            RunOrder = order
+                        });
+                    }
+
+                    async Task RunAfwAsync(TaskPrompt task, int attempt, int order)
+                    {
+                        var afw = await scaffoldAgentRunner.RunSingleTurnAsync(
+                            task.SystemPrompt, task.Prompt, task.MaxTokens, _config.Sampling, ct);
+                        int promptTok = afw.PromptTokens ?? TokenEstimator.EstimateTokens(task.Prompt);
+                        int completionTok = afw.CompletionTokens ?? TokenEstimator.EstimateTokens(afw.FullText);
+                        double genSeconds = (afw.TotalDurationMs - afw.TtftMs) / 1000.0;
+                        double tokPerSec = afw.Success && genSeconds >= MinReliableGenSeconds
+                            ? completionTok / genSeconds : double.NaN;
+                        Log(afw.Success
+                            ? $"    agent-framework: TTFT {afw.TtftMs:F0}ms, {completionTok} tok, prompt {promptTok} tok\n"
+                            : $"    agent-framework: FAILED: {afw.Error}\n");
+                        result.ScaffoldComparisonRuns.Add(new ScaffoldComparisonResult
+                        {
+                            ModelId = scaffoldModelId,
+                            TaskName = task.Name,
+                            Attempt = attempt,
+                            Scaffold = "AgentFramework",
+                            Success = afw.Success,
+                            TtftMs = afw.TtftMs,
+                            TotalDurationMs = afw.TotalDurationMs,
+                            PromptTokens = promptTok,
+                            CompletionTokens = completionTok,
+                            TokensPerSecond = tokPerSec,
+                            Error = afw.Error,
+                            RunOrder = order
+                        });
+                    }
+
+                    // Untimed warm-up of both paths. If the preceding section left a
+                    // different model resident, the first timed request would otherwise
+                    // absorb the model load, and the first Agent Framework call would pay
+                    // one-time connection/JIT cost the raw path doesn't.
+                    CurrentStage = "Scaffold comparison: warm-up";
+                    Log("  Warming up both paths (untimed)...\n");
+                    const string warmupPrompt = "Reply with the single word OK.";
+                    var warmRaw = await _client.StreamChatCompletionAsync(
+                        scaffoldModelId, null, warmupPrompt, 16, _config.Sampling, ct);
+                    var warmAfw = await scaffoldAgentRunner.RunSingleTurnAsync(
+                        null, warmupPrompt, 16, _config.Sampling, ct);
+                    if (!warmRaw.Success || !warmAfw.Success)
+                        Log($"  Warm-up problem (raw: {warmRaw.Error ?? "ok"}; agent-framework: {warmAfw.Error ?? "ok"}) — timings below may include load cost.\n");
+
+                    // Each pair sends the identical prompt twice, so a server with
+                    // prompt-prefix caching can serve the second request faster regardless
+                    // of scaffold. Alternate which path goes first (and record it in the
+                    // RunOrder column) so the effect is spread across both paths and can
+                    // be checked in the data instead of being baked into one side.
+                    int pairIndex = 0;
                     foreach (var task in _config.Tasks)
                     {
                         for (int attempt = 1; attempt <= _config.RepeatsPerTask; attempt++)
@@ -323,55 +409,16 @@ public sealed class BenchmarkRunner
                             CurrentStage = $"Scaffold comparison: {task.Name} attempt {attempt}/{_config.RepeatsPerTask}";
                             Log($"  [{task.Name}] attempt {attempt}/{_config.RepeatsPerTask}\n");
 
-                            var raw = await _client.StreamChatCompletionAsync(
-                                scaffoldModelId, task.SystemPrompt, task.Prompt, task.MaxTokens, _config.Sampling, ct);
-                            int rawPromptTok = raw.PromptTokens ?? TokenEstimator.EstimateTokens(task.Prompt);
-                            int rawCompletionTok = raw.CompletionTokens ?? TokenEstimator.EstimateTokens(raw.FullText);
-                            double rawGenSeconds = (raw.TotalDurationMs - raw.TtftMs) / 1000.0;
-                            double rawTokPerSec = raw.Success && rawGenSeconds >= MinReliableGenSeconds
-                                ? rawCompletionTok / rawGenSeconds : double.NaN;
-                            Log(raw.Success
-                                ? $"    raw-http:        TTFT {raw.TtftMs:F0}ms, {rawCompletionTok} tok, prompt {rawPromptTok} tok\n"
-                                : $"    raw-http:        FAILED: {raw.Error}\n");
-                            result.ScaffoldComparisonRuns.Add(new ScaffoldComparisonResult
+                            if (pairIndex++ % 2 == 0)
                             {
-                                ModelId = scaffoldModelId,
-                                TaskName = task.Name,
-                                Attempt = attempt,
-                                Scaffold = "RawHttp",
-                                Success = raw.Success,
-                                TtftMs = raw.TtftMs,
-                                TotalDurationMs = raw.TotalDurationMs,
-                                PromptTokens = rawPromptTok,
-                                CompletionTokens = rawCompletionTok,
-                                TokensPerSecond = rawTokPerSec,
-                                Error = raw.Error
-                            });
-
-                            var afw = await scaffoldAgentRunner.RunSingleTurnAsync(
-                                task.SystemPrompt, task.Prompt, task.MaxTokens, ct);
-                            int afwPromptTok = afw.PromptTokens ?? TokenEstimator.EstimateTokens(task.Prompt);
-                            int afwCompletionTok = afw.CompletionTokens ?? TokenEstimator.EstimateTokens(afw.FullText);
-                            double afwGenSeconds = (afw.TotalDurationMs - afw.TtftMs) / 1000.0;
-                            double afwTokPerSec = afw.Success && afwGenSeconds >= MinReliableGenSeconds
-                                ? afwCompletionTok / afwGenSeconds : double.NaN;
-                            Log(afw.Success
-                                ? $"    agent-framework: TTFT {afw.TtftMs:F0}ms, {afwCompletionTok} tok, prompt {afwPromptTok} tok\n"
-                                : $"    agent-framework: FAILED: {afw.Error}\n");
-                            result.ScaffoldComparisonRuns.Add(new ScaffoldComparisonResult
+                                await RunRawAsync(task, attempt, 1);
+                                await RunAfwAsync(task, attempt, 2);
+                            }
+                            else
                             {
-                                ModelId = scaffoldModelId,
-                                TaskName = task.Name,
-                                Attempt = attempt,
-                                Scaffold = "AgentFramework",
-                                Success = afw.Success,
-                                TtftMs = afw.TtftMs,
-                                TotalDurationMs = afw.TotalDurationMs,
-                                PromptTokens = afwPromptTok,
-                                CompletionTokens = afwCompletionTok,
-                                TokensPerSecond = afwTokPerSec,
-                                Error = afw.Error
-                            });
+                                await RunAfwAsync(task, attempt, 1);
+                                await RunRawAsync(task, attempt, 2);
+                            }
                         }
                     }
                 }

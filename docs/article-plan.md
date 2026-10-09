@@ -19,6 +19,49 @@ but as the CUDA / Blackwell counterpart.
 
 ## DECISION LOG
 
+- **2026-10-08 — PR review corrections: tokens/joule window, prefill labelling, and the
+  scaffold-comparison confounds.** An outside review of PR #1 found real methodology
+  defects; fixed in code, and the article numbers recomputed. **Entries below this one
+  quote the superseded tokens/joule and prefill figures** — kept as the historical record,
+  not as current numbers; the draft and `README.md` are authoritative.
+  - **Tokens/joule used mismatched intervals.** `AvgPowerW` is averaged over the whole
+    request (the sampler starts before the call), but was multiplied by only the
+    post-first-token seconds, so energy was understated and every efficiency figure
+    inflated. Now `completion tokens / (AvgPowerW × total request seconds)` — end-to-end,
+    including prefill and the ~2.1 s first-token wait that every speed-pass request paid
+    regardless of model. Recomputed from the recorded CSV columns (no rerun needed):
+
+    | | old (post-first-token window) | corrected (whole request) |
+    |---|---|---|
+    | Qwen NVFP4 primary / Ornith | 0.591 / 1.544 (2.6×) | 0.165 / 0.315 (**1.91×**) |
+    | MTP off → on | 0.240 → 0.557 (2.32×) | 0.101 → 0.163 (**1.62×**) |
+    | NVFP4 vs UD-Q4_K_M, matched f16 KV | 0.557 vs 0.590 (UD +6%) | 0.163 vs 0.171 (UD +4.9%) |
+    | NVFP4 vs UD-Q4_K_M, first pass | 0.591 vs 0.544 (NVFP4 +9%) | 0.165 vs 0.159 (NVFP4 +4%) |
+    | UD-Q4_K_M vs Ornith | 0.590 vs 1.544 (2.62×) | 0.171 vs 0.315 (**1.84×**) |
+
+    Directions are unchanged but the gaps shrink a lot; the quant-bridge tokens/joule
+    "flip" is now two sub-5% gaps and is described as noise-level, not a reversal worth
+    leaning on. A decode-only efficiency would need power averaged over the decode window
+    alone, which the recorded data can't give.
+  - **"Prefill" from the context probe was not prefill.** It is `RequestedContextTokens /
+    TotalDurationMs`, which folds up to 100 generated tokens into the denominator and uses
+    the target size rather than the server's prompt-token count. The old CSVs don't hold
+    TTFT or real prompt tokens, so it can't be recomputed; relabelled end-to-end, bounded
+    (decode could be up to ~40% of the request at 8K, ~14% at 16K, <10% at ≥32K, <5% at
+    ≥64K; removing the maximum possible decode time moves Ornith/Qwen from 1.40–1.84× to
+    1.34–1.84×), and one request per size is noted. The probe now records `TtftMs` and
+    `PromptTokens`; ChartBuilder uses them when present. **Also corrected:** the draft
+    said Ornith ran "1.4–2.3×" Qwen's prefill — the data range is 1.40–1.84×.
+  - **Scaffold comparison (raw HTTP vs Agent Framework)** had no warm-up, a fixed
+    raw-first order (the second identical prompt can ride a prefix cache), and the Agent
+    Framework path ignored `Sampling`. Now: untimed warm-up of both paths, alternating
+    order with a `RunOrder` column, and the same temperature/top-p/top-k/min-p/repetition
+    penalty/thinking/reasoning-effort on both. **No scaffold-comparison run has been
+    recorded or used in the article** — this is a harness fix only.
+  - Also fixed: the draft described Ornith as "1.5-trillion-parameter-class"; it is
+    Ornith-1.5-35B-A3B (35B total, ~3B active). And `config.verify-completeness.json`'s
+    comment repeated the already-corrected NotImplementedException grading error.
+
 - **2026-09-15 — KV-cache-matched bridge rerun done; two of the four decomposition
   metrics FLIP once KV cache is actually controlled.** Reused
   `results/speed-20260914-234838.csv` (Qwen NVFP4, f16 KV, `--speculative-type mtp` —
@@ -250,7 +293,9 @@ re-check before reusing an id.
 - [x] **Power sampling** — `GpuSampler` in `GpuMonitor.cs` polls
       `power.draw,utilization.gpu,clocks.sm` every 500 ms around each speed request;
       `AvgPowerW`, `PeakPowerW`, `TokensPerJoule` added to `speed-*.csv` (blank if nvidia-smi
-      gives no board power). `TokensPerJoule` = completion tok / (avg W × gen seconds).
+      gives no board power). `TokensPerJoule` was originally completion tok / (avg W × gen
+      seconds) — **superseded 2026-10-08**: now divides by total request seconds (see the
+      top decision-log entry).
 - [x] README metrics table + notes updated; dashboard gets prefill / power / tokens-per-joule charts
 - [x] Sanity-checked live: AvgPowerW 179-381W across two models, PeakPowerW up to 459W
       (plausible for a 575W-TGP 5090), all columns populate correctly.
@@ -299,7 +344,8 @@ concurrency, and the 3-stage workflow. Files: `results/speed-20260911-200157.csv
 **Net (NVFP4 vs Q4_K_M, the original two-model comparison)**: Ornith beats Qwen on every
 axis — 1.9× the avg decode tok/s, 67% of the power draw, 2.6× the tokens/joule, and
 1.4–2.3× the prefill throughput across matched context sizes, plus a context ceiling 45%
-higher. But see the bridge-point run below before treating this as a clean
+higher. *(2026-10-08: tokens/joule is really 1.9× and prompt throughput 1.4–1.8× — see
+the top decision-log entry.)* But see the bridge-point run below before treating this as a clean
 architecture-only result — it isn't quant-controlled.
 
 ## Bridge-point run — 2026-09-15, SUPERSEDED same day by the KV-matched rerun below

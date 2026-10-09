@@ -195,7 +195,7 @@ emit OpenTelemetry traces. This is a no-op by default and turns on only when
 | File | Contents |
 |---|---|
 | `speed-*.csv` | Per task+attempt: TTFT, total duration, prompt/completion tokens, tokens/s, **prefill tokens/s**, VRAM before/after, **avg/peak board power (W)**, **tokens/joule**, errors |
-| `context-probe-*.csv` | Per context step: requested tokens, device max context (from `/v1/models`), success, duration, VRAM |
+| `context-probe-*.csv` | Per context step: requested tokens, device max context (from `/v1/models`), success, total duration, VRAM, **TTFT and server-reported prompt tokens** (blank on runs recorded before these were captured) |
 | `quality-transcripts-*.txt` | Raw model outputs, for manual grading |
 | `agent-concurrency-*.csv` | Per agent+level: TTFT, duration, tokens, tokens/s |
 | `agent-concurrency-summary-*.csv` | Per level: wall-clock, success/fail counts, aggregate tokens/s, avg TTFT |
@@ -212,11 +212,25 @@ All files get a `yyyyMMdd-HHmmss` timestamp suffix.
   Blank when no first-token signal arrived (TTFT was forced equal to total duration).
 - **Power** (`AvgPowerW` / `PeakPowerW` / `TokensPerJoule`) comes from polling
   `nvidia-smi --query-gpu=power.draw,...` every 500 ms while each request is in flight.
-  `TokensPerJoule` = completion tokens / (avg power × generation seconds). All three
-  columns are blank if `nvidia-smi` reports no board power (common on laptop dGPUs).
+  `TokensPerJoule` = completion tokens / (avg power × **total request** seconds): average
+  power is taken over the whole request, so it is only valid against the whole request's
+  duration. That makes it an end-to-end figure that includes prefill and the wait for the
+  first token; a fixed per-request latency therefore dilutes differences between models on
+  short generations. (Runs recorded before this definition was fixed used the
+  post-first-token window and overstate efficiency — recompute them from
+  `CompletionTokensEstimate`, `AvgPowerW` and `TotalDurationMs`.) All three columns are
+  blank if `nvidia-smi` reports no board power (common on laptop dGPUs).
 - **Token counts** prefer the server's `usage` field; when absent they fall back to a
   ~4-chars-per-token estimate (fallback, not a substitute).
 - **VRAM** reads the first GPU from `nvidia-smi`; adjust `GpuMonitor.cs` if you have multiple.
+- **Context-probe prompt throughput** should be computed as `PromptTokens / TTFT`. The
+  older `RequestedContextTokens / TotalDurationMs` shortcut folds up to 100 generated
+  tokens into the denominator (and uses the target size, not the real token count), which
+  inflates the apparent cost of small contexts and favors the faster decoder.
+- **Scaffold comparison** (raw HTTP vs Agent Framework) runs an untimed warm-up of both
+  paths first, sends the same sampling parameters on both, and alternates which path goes
+  first in each pair (`RunOrder` column), because the second of two identical prompts can
+  benefit from server-side prefix caching.
 - **Context probe** steps that exceed the device max context are skipped (the server
   truncates rather than fails, so testing past the cap would just re-measure the capped size).
 - **Model loading**: a `repo:quant` model id that isn't downloaded yet triggers an on-demand

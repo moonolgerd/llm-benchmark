@@ -63,7 +63,7 @@ public static class ResultsWriter
     public static void WriteContextProbeCsv(string path, IEnumerable<ContextProbeResult> results)
     {
         using var writer = new StreamWriter(path, append: false);
-        writer.WriteLine("ModelId,RequestedContextTokens,DeviceMaxContextTokens,Succeeded,TotalDurationMs,VramUsedMbAfter,Error");
+        writer.WriteLine("ModelId,RequestedContextTokens,DeviceMaxContextTokens,Succeeded,TotalDurationMs,VramUsedMbAfter,Error,TtftMs,PromptTokens");
 
         foreach (var r in results)
         {
@@ -72,7 +72,9 @@ public static class ResultsWriter
                 r.DeviceMaxContextTokens?.ToString(CultureInfo.InvariantCulture) ?? "",
                 r.Succeeded,
                 r.TotalDurationMs.ToString("F1", CultureInfo.InvariantCulture),
-                r.VramUsedMbAfter, Csv(r.Error ?? "")));
+                r.VramUsedMbAfter, Csv(r.Error ?? ""),
+                Metric(r.TtftMs, "F1"),
+                r.PromptTokens >= 0 ? r.PromptTokens.ToString(CultureInfo.InvariantCulture) : ""));
         }
     }
 
@@ -144,7 +146,7 @@ public static class ResultsWriter
     {
         using var writer = new StreamWriter(path, append: false);
         writer.WriteLine("ModelId,TaskName,Attempt,Scaffold,Success,TtftMs,TotalDurationMs," +
-                          "PromptTokens,CompletionTokens,TokensPerSecond,Error");
+                          "PromptTokens,CompletionTokens,TokensPerSecond,Error,RunOrder");
 
         foreach (var r in results)
         {
@@ -154,7 +156,7 @@ public static class ResultsWriter
                 r.TotalDurationMs.ToString("F1", CultureInfo.InvariantCulture),
                 r.PromptTokens, r.CompletionTokens,
                 r.TokensPerSecond.ToString("F2", CultureInfo.InvariantCulture),
-                Csv(r.Error ?? "")));
+                Csv(r.Error ?? ""), r.RunOrder));
         }
     }
 

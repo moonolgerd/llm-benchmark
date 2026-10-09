@@ -8,12 +8,12 @@
 
 - **NVFP4 on a 5090 pushes a dense 27B model to ~123 tok/s** at full board power (257 W
   avg) — solid, but not the headline.
-- **MTP is worth +78% decode throughput, 2.3× the tokens/joule, and costs ~25% of your
+- **MTP is worth +78% decode throughput, ~1.6× the tokens/joule, and costs ~25% of your
   context ceiling** — a real, matched before/after, once I found the actual lever. On by
   default with no HTTP-reachable control otherwise, and its draft-acceptance rate — the
   thing that determines how much of that +78% you actually get — swings with the serving
   stack's own state, not just the model.
-- **The MoE model wins on every speed and efficiency axis** (1.9× decode tok/s, 2.6×
+- **The MoE model wins on every speed and efficiency axis** (1.9× decode tok/s, 1.9×
   tokens/joule, 45% more usable context, even generously corrected) — and once I caught
   and fixed a real inconsistency in my own grading, quality between it and the dense
   NVFP4 model is a wash (96.0 vs 95.5, not the 97-vs-95 gap I originally reported).
@@ -90,13 +90,16 @@ context probe against each.
 |---|---|---|---|
 | Decode tok/s avg | 65.7 | **117.3** | **+78%** |
 | Avg board power | 308.6 W | **253.7 W** | MTP uses *less* power |
-| Tokens/joule | 0.240 | **0.557** | **2.32× more efficient** |
+| Tokens/joule (whole request) | 0.101 | **0.163** | **1.62× more efficient** |
 | Context ceiling (f16 KV) | **92,672 tok** | 69,120 tok | off is ~25% higher |
 
 That's the real shape of the trade. MTP doesn't just make this card faster — verifying
 several draft tokens in one batched forward pass is more compute-efficient per output
 token than decoding them one at a time, so it draws *less* power while producing *more*
-tokens, over 2× the tokens per joule. The cost is context: the draft/NextN sidecar has
+tokens — about 1.6× the tokens per joule. That's measured over the whole request, including
+the roughly constant ~2.1 s wait for the first token that every request in this speed pass
+paid regardless of model or mode, so it understates the decode-only gap; I can't isolate the
+decode window because power was averaged over the whole request. The cost is context: the draft/NextN sidecar has
 its own VRAM footprint, which eats into what would otherwise be KV cache, so the same
 32 GB card fits about a quarter less context with the drafter on. Draft acceptance on
 this exact matched run sat at 70.7–100%, mean draft length 2.41–3.00 tokens.
@@ -123,15 +126,15 @@ that only reports one of them is incomplete.
 ## Finding #3 — Dense vs. MoE Under a 32 GB Ceiling
 
 This is the comparison the setup was built for: a dense 27B model against a
-1.5-trillion-parameter-class MoE with ~3B active parameters, both squeezed under the same
-32 GB card.
+35B-total-parameter MoE with ~3B active parameters (Ornith-1.5-35B-A3B), both squeezed
+under the same 32 GB card.
 
 | Metric | Qwen3.8-27B (dense, NVFP4) | Ornith-1.5-35B-A3B (MoE) |
 |---|---|---|
 | Decode tok/s (avg / range) | 122.6 / 106.3–140.5 | **232.4** / 187.0–410.6 |
 | Avg board power | 257.5 W | **173.1 W** |
 | VRAM used | 26.1 GB | 28.5 GB |
-| Tokens/joule | 0.591 | **1.544** (2.6×) |
+| Tokens/joule (whole request) | 0.165 | **0.315** (1.9×) |
 | Context ceiling (device-fit) | 180,480 tok | **262,144 tok** (full native) |
 | Quality (rubric avg, 0–100) | 96.0 | 95.5 |
 
@@ -140,10 +143,17 @@ This is the comparison the setup was built for: a dense 27B model against a
 Ornith wins every efficiency axis by a wide margin: nearly double the throughput at two
 thirds the power, and a context ceiling 45% higher — it fits its full native 262K context
 on this card, where the dense model tops out at 180K before the server refuses to load
-more. Prefill throughput (measured from the context probe, which amortizes fixed
-per-request overhead better than the short speed-pass prompts do) tells the same story:
-Ornith ran 1.4–2.3× Qwen's prefill tok/s across matched context sizes, from 8K tokens all
-the way to 128K.
+more. Prompt-processing throughput, measured from the context probe (which amortizes the
+fixed per-request overhead better than the short speed-pass prompts do), tells the same
+story: Ornith ran 1.4–1.8× Qwen's throughput across matched context sizes, from 8K tokens
+all the way to 128K. One honest limit on that number: it is requested tokens ÷ total request
+time, not true prefill (prompt tokens ÷ time-to-first-token), because the probe didn't yet
+record first-token time or the server's real prompt-token count. Each probe also generates
+up to 100 tokens, which are in the denominator. Bounding that: at 8K it could account for up
+to ~40% of the request (faster decoders are flattered), at 16K ~10–14%, at 32K ~7–9%, and
+under 5% from 64K up. Taking the maximum possible decode time out only moves the ratio from
+1.40–1.84× to 1.34–1.84×, so the direction and rough size survive, but treat the 8K and
+16K points as soft and note each size is a single request.
 
 ![Prefill throughput vs. context size, both models](charts/prefill-tps-grouped-bar.png)
 
@@ -171,27 +181,32 @@ weights, recorded, not inferred from a GUI screenshot.
 |---|---|---|
 | Decode tok/s avg | 117.3 | 130.3 |
 | Avg power | 253.7 W | 281.0 W |
-| Tokens/joule | 0.557 | 0.590 |
+| Tokens/joule (whole request) | 0.163 | 0.171 |
 | Context ceiling | 69,120 tok | 85,248 tok |
-| Prefill tok/s, 8K→64K | 4362→2158 | 3400→1750 |
+| Prompt tok/s (end-to-end), 8K→64K | 4362→2158 | 3400→1750 |
 
-Two things held up: prefill throughput still shows a clean, consistent NVFP4 edge
-(~1.20–1.28× at every size, whether KV cache is matched or not — genuinely a quant-format
-effect, not an artifact), and UD-Q4_K_M is still marginally the faster decoder, still very
-likely MTP draft-acceptance noise rather than a quant effect (decode speed isn't touched
-by KV cache dtype the way prefill and context capacity are). **Two things flipped
-outright.** Tokens/joule: the first pass had NVFP4 about 9% ahead; matched, UD-Q4_K_M is
-about 6% ahead instead. Context ceiling: the first pass had NVFP4 24% higher; matched,
-UD-Q4_K_M is 23% higher instead. Both directions reversed. The absolute numbers moved a
-lot too — NVFP4's own context ceiling went from 180,480 (unknown KV, almost certainly
-quantized) to 69,120 (explicit f16) — which is mostly telling you how much a KV-cache
-choice alone is worth on this card, not anything about the model.
+Two things held up: prompt throughput still shows a clean, consistent NVFP4 edge (1.20–1.28×
+at every matched step from 8K to 64K, and 1.16–1.30× out to 128K in the unmatched first pass
+— a quant-format effect, not a KV-cache artifact; the decode-time contamination described
+above is larger for the slower-decoding NVFP4 side, so if anything it understates the
+edge), and UD-Q4_K_M is still marginally the faster decoder, still very likely MTP
+draft-acceptance noise rather than a quant effect (decode speed isn't touched by KV cache
+dtype the way prompt processing and context capacity are). **Two things flipped.** Context
+ceiling: the first pass had NVFP4 24% higher; matched, UD-Q4_K_M is 23% higher instead —
+a clear reversal. Tokens/joule: the first pass had NVFP4 about 4% ahead; matched, UD-Q4_K_M
+is about 5% ahead — also a reversal in sign, but both gaps are small enough that I'd read
+it as "no meaningful difference" rather than a winner, given power was sampled every 500 ms
+over requests of only a few seconds. The absolute numbers moved a lot too — NVFP4's own
+context ceiling went from 180,480 (unknown KV, almost certainly quantized) to 69,120
+(explicit f16) — which is mostly telling you how much a KV-cache choice alone is worth on
+this card, not anything about the model.
 
 I'm not going to redo the Ornith comparison here, because it would give a false sense of
 precision: Ornith's own KV cache dtype during its run is still unknown, so "Ornith vs
 Qwen" stays a comparison with one uncontrolled side no matter which Qwen number I plug
-in. What I can say cleanly is the part that's now actually isolated — NVFP4 wins prefill,
-loses tokens/joule and context ceiling, to a standard k-quant on identical weights — and
+in. What I can say cleanly is the part that's now actually isolated — NVFP4 wins prompt
+throughput and loses context ceiling (and, marginally, tokens/joule) to a standard k-quant
+on identical weights — and
 that a claim I nearly published ("controlling for quant format widens the MoE's
 advantage") was built on a comparison that wasn't controlled for the thing it claimed to
 control for. It's out of this draft for that reason, not because it was necessarily
@@ -243,7 +258,7 @@ never against Ornith, the model it would actually have to beat to matter.
 |---|---|---|---|
 | Decode tok/s | 130.3 | **232.4** | 1.78× |
 | Avg power | 281.0 W | **173.1 W** | uses 62% of the power |
-| Tokens/joule | 0.590 | **1.544** | 2.62× |
+| Tokens/joule (whole request) | 0.171 | **0.315** | 1.84× |
 | Context ceiling | 85,248 tok* | **262,144 tok** | 3.08× (*see below) |
 | Quality (5-task avg) | **98.6** | 95.5 | UD-Q4_K_M +3.1, driven by 1 task |
 
@@ -294,7 +309,7 @@ This started as a quant-and-architecture benchmark, but the question I actually 
 about is narrower: which of these do you point an agentic coding setup at?
 
 **The MoE model is the default I'd actually recommend**, including for agentic coding.
-It wins decode speed (1.78–1.9×), power efficiency (2.6× tokens/joule), and context
+It wins decode speed (1.78–1.9×), power efficiency (1.8–1.9× tokens/joule), and context
 capacity by wide margins over both dense configurations — margins wide enough to survive
 generous correction (UD-Q4_K_M's context number, run under a deliberately uncompressed
 KV cache to isolate a different variable, would realistically be ~140–180K deployed
@@ -307,7 +322,7 @@ interface, refactor to constructor injection, hand back the literal registration
 **Qwen3.8-27B UD-Q4_K_M**, a model I only added as a quant-format control, got it right
 every attempt while Qwen NVFP4 shipped a placeholder that doesn't compile and Ornith
 handed back a bare excerpt twice out of three. That's three attempts on one task, not
-enough to override a 1.78×/2.6× speed-and-efficiency gap — but if your agentic workload
+enough to override a 1.78×/1.8× speed-and-efficiency gap — but if your agentic workload
 leans hard on "give me the complete file, not a sketch of one," test that exact pattern
 with a real sample size before trusting whichever model you land on, independent of
 which one you pick as your default. Everything else in this rubric — tool-calling,
@@ -315,7 +330,7 @@ structured extraction, long-context retrieval — was a clean 100/100 across all
 configurations, so the choice there comes down cleanly to speed and efficiency, where
 the MoE model wins outright.
 
-Either way: MTP is worth turning on — +78% decode, less power, 2.3× the efficiency, for
+Either way: MTP is worth turning on — +78% decode, less power, ~1.6× the efficiency, for
 about a quarter of your context ceiling — but don't take a vendor's "always-on
 speculative decoding" throughput number at face value without checking draft-acceptance
 logs; the multiplier you actually get on any given request is a property of that
@@ -379,7 +394,14 @@ capacity planning goes wrong.
   prefix-KV-cache reuse can't inflate the result) until the server fails or hits its
   device-fit ceiling.
 - **Power**: `nvidia-smi --query-gpu=power.draw,...` polled every 500 ms for the duration
-  of each request; tokens/joule = completion tokens ÷ (avg watts × generation seconds).
+  of each request; tokens/joule = completion tokens ÷ (avg watts × **total request
+  seconds**). Average power is taken over the whole request, so the whole request is the
+  only duration it is valid against; this is an end-to-end figure that includes prefill and
+  the ~2.1 s first-token wait. (An earlier draft multiplied the whole-request average by the
+  post-first-token window only, which understated energy and inflated every efficiency
+  ratio — e.g. Ornith vs Qwen read 2.6× and MTP on/off read 2.3× instead of 1.9× and
+  1.6×. Every number here is recomputed from the recorded completion tokens, power and
+  durations.)
 - **Quality**: manual rubric grading (not an LLM-judge) against a written pass/fail
   criteria per task, scored 0–100, by hand. 30 transcripts from the two primary models'
   full run, 6 from the bash-script-extend generalization check, and 15 from the
@@ -392,8 +414,11 @@ capacity planning goes wrong.
   scaling of a 3-stage sequential agent pipeline run at 1/2/4-way concurrency.
 - **Caveat**: speed-pass prefill-tokens/s is overhead-dominated at short prompt sizes
   (~2.1s fixed TTFT regardless of prompt length under ~300 tokens) and isn't a meaningful
-  prefill-throughput number at that scale — the context-probe-derived numbers in Finding #3
-  are the ones to trust for prefill throughput.
+  prefill-throughput number at that scale. The context-probe numbers in Finding #3 are the
+  better of the two, but they are end-to-end (requested tokens ÷ total request time,
+  including up to 100 generated tokens, one request per size), not true prefill; the harness
+  now records time-to-first-token and the server's prompt-token count in the context probe
+  so a rerun can report prompt tokens ÷ TTFT directly.
 - Every number here is a snapshot of one serving stack's state on one day — draft
   acceptance rates and context ceilings both visibly drifted between sessions on this
   same box (see Finding #2). Re-verify before citing "the" number for a given model.

@@ -18,4 +18,6 @@ public class ScaffoldComparisonResult
     public int CompletionTokens { get; set; }
     public double TokensPerSecond { get; set; }
     public string? Error { get; set; }
+    /// <summary>1 if this scaffold ran first in its pair, 2 if second. The second request repeats an identical prompt, so a server with prompt-prefix caching can favor it; order is alternated across pairs so that effect can be checked in the data.</summary>
+    public int RunOrder { get; set; }
 }

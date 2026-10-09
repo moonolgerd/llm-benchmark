@@ -1,13 +1,17 @@
 {
   "_comment": [
-    "Follow-up verification: csharp-refactor-di showed a quality gap (Qwen 90 vs Ornith 80.7,",
-    "docs/quality-rubric.md). Two specific failure modes drove Ornith's score down there:",
-    "(1) stubbing real implementation logic behind NotImplementedException instead of",
-    "preserving it, and (2) giving a 2-line DI excerpt instead of the literally-requested",
-    "'standard Program.cs'. This config re-tests BOTH failure modes in a different domain",
-    "(bash/terminal instead of C#) to see if it's a general completeness/fidelity issue or",
-    "specific to that one C# task. Same models, same sampling as config.article.json.",
-    "Single task, 3 repeats each - fast, targeted, not a full re-run."
+    "Follow-up verification: csharp-refactor-di was the one task that separated the models",
+    "(see docs/quality-rubric.md, including its Regrade section). The real completeness",
+    "failures there were (1) placeholder method bodies that don't compile and (2) a bare",
+    "2-line DI excerpt instead of the literally-requested 'standard Program.cs'. It was",
+    "NOT a case of dropping real logic: that prompt never supplied the concrete",
+    "implementations, so a NotImplementedException stub discarded nothing. This config",
+    "re-tests the generalizable part in a different domain (bash/terminal): given a working",
+    "script, preserve every behavior the prompt explicitly supplies and return the complete",
+    "file rather than a sketch or excerpt - to see whether the pattern is a general",
+    "completeness/fidelity issue or specific to that one C# task. Same models, same",
+    "sampling as config.article.json. Single task, 3 repeats each - fast, targeted, not a",
+    "full re-run."
   ],
   "baseUrl": "http://localhost:8888/v1",
   "apiKey": "${UNSLOTH_API_KEY}",
